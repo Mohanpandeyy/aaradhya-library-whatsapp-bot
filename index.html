@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Library Management System</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/src/index.css">
+    <!-- Firebase App/Firestore SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
+        import { getFirestore, collection, addDoc, getDocs, doc, updateDoc, deleteDoc, query, where, getDoc, setDoc, onSnapshot, serverTimestamp, Timestamp, getDocFromServer } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-firestore.js";
+
+        // --- HELPERS ---
+        const $ = (id) => document.getElementById(id);
+        window.$ = $;
+        
+        function showToast(msg, type = 'success') {
+            const toast = $('toast');
+            if (!toast) return;
+            toast.innerText = msg;
+            toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded shadow-lg text-white transition-opacity duration-300 z-[100] ${type === 'success' ? 'bg-green-600' : 'bg-red-600'}`;
+            toast.classList.remove('opacity-0');
+            setTimeout(() => toast.classList.add('opacity-0'), 3000);
+        }
+        window.showToast = showToast;
+
+        window.openModal = (id) => $(id).classList.remove('hidden');
+        window.closeModal = (id) => $(id).classList.add('hidden');
+
+        // --- ERROR HANDLING ---
+        const OperationType = {
+          CREATE: 'create',
+          UPDATE: 'update',
+          DELETE: 'delete',
+          LIST: 'list',
+          GET: 'get',
+          WRITE: 'write',
+        };
+
+        function handleFirestoreError(error, operationType, path) {
+          const errInfo = {
+            error: error instanceof Error ? error.message : String(error),
+            operationType,
+            path
+          };
+          console.error('Firestore Error: ', JSON.stringify(errInfo));
+          showToast(`Database Error: ${errInfo.error}`, 'error');
+        }
+
+        // --- FIREBASE CONFIG ---
+        const firebaseConfig = {
+            projectId: "rising-tranquility-qszp9",
+            appId: "1:181488601856:web:0393aaf3d56778454841e5",
+            apiKey: "AIzaSyAkt-8kbVhNBiCr2r7dx_WJg9vqsjHKj3c",
+            authDomain: "rising-tranquility-qszp9.firebaseapp.com",
+            firestoreDatabaseId: "ai-studio-cb5d041c-8dd7-4407-8ab5-18a568fc473b",
+            storageBucket: "rising-tranquility-qszp9.firebasestorage.app",
+            messagingSenderId: "181488601856"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+        // Test Database
+        async function testConnection() {
+          try {
+            await getDocFromServer(doc(db, 'test', 'connection'));
+            console.log("Database connection successful.");
+          } catch (error) {
+            console.warn("Database connection check failed (expected if collection empty):", error.message);
+          }
+        }
+        testConnection();
+
+        // Green API Config
+        const INSTANCE_ID = "7107633618";
+        const API_TOKEN = "50028f4fde9b4c719c4748668f9697225bc2f3fab9c44d1c80";
+        const BASE_URL = `https://api.green-api.com/waInstance${INSTANCE_ID}`;
+
+        // Global State
+        let students = [];
+        let templates = {};
+        let currentMonth = new Date().toLocaleString('default', { month: 'long' });
+        let currentYear = new Date().getFullYear();
+
+        // DOM Elements
+        const sections = ['dashboard', 'students', 'sendMessage', 'broadcast', 'templates', 'feeManagement'];
+
+        // --- SECTION MANAGEMENT ---
+        window.toggleSidebar = () => {
+            const sidebar = $('sidebar');
+            const overlay = $('sidebarOverlay');
+            sidebar.classList.toggle('-translate-x-full');
+            overlay.classList.toggle('hidden');
+        };
+
+        window.showSection = (sectionId) => {
+            sections.forEach(s => $(s).classList.add('hidden'));
+            $(sectionId).classList.remove('hidden');
+            
+            // Update sidebar active state
+            document.querySelectorAll('.nav-link').forEach(link => {
+                link.classList.remove('bg-green-600', 'text-white');
+                link.classList.add('text-gray-600', 'hover:bg-gray-100');
+            });
+            $(`nav-mobile-${sectionId}`).classList.add('bg-green-600', 'text-white');
+            $(`nav-mobile-${sectionId}`).classList.remove('text-gray-600', 'hover:bg-gray-100');
+            $(`nav-desktop-${sectionId}`).classList.add('bg-green-600', 'text-white');
+            $(`nav-desktop-${sectionId}`).classList.remove('text-gray-600', 'hover:bg-gray-100');
+
+            if (!window.matchMedia('(min-width: 1024px)').matches) {
+                const sidebar = $('sidebar');
+                const overlay = $('sidebarOverlay');
+                if (!sidebar.classList.contains('-translate-x-full')) {
+                    window.toggleSidebar();
+                }
+            }
+
+            if (sectionId === 'dashboard') updateDashboard();
+            if (sectionId === 'feeManagement') renderFeeBatch();
+            if (sectionId === 'broadcast') renderBroadcastList();
+        };
+
+        // --- WHATSAPP FUNCTIONS ---
+        async function sendWhatsApp(phone, message) {
+            try {
+                // Format phone: add 91 prefix if not present, strip symbols, add @c.us
+                let cleanPhone = phone.replace(/\D/g, '');
+                if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
+                const chatId = `${cleanPhone}@c.us`;
+
+                const waRes = await window.fetch(`${BASE_URL}/sendMessage/${API_TOKEN}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chatId, message })
+                });
+
+                if (!waRes.ok) {
+                  const errorData = await waRes.json();
+                  throw new Error(errorData.message || 'WhatsApp API failed');
+                }
+
+                showToast('Message sent successfully!', 'success');
+                return true;
+            } catch (err) {
+                console.error('WhatsApp Error:', err);
+                showToast(`WhatsApp Error: ${err.message}`, 'error');
+                return false;
+            }
+        }
+
+        // --- DATA FETCHING & REMINDERS ---
+        let reminderCheckDone = false;
+
+        async function loadData() {
+            const path = "students";
+            // Real-time students
+            onSnapshot(collection(db, path), (snapshot) => {
+                students = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderStudents();
+                updateDashboard();
+                renderFeeBatch();
+                populateStudentSelects();
+                
+                // Run reminder check once after data is first loaded
+                if (!reminderCheckDone && students.length > 0) {
+                    checkReminders();
+                    reminderCheckDone = true;
+                }
+            }, (error) => {
+                handleFirestoreError(error, OperationType.GET, path);
+            });
+
+            // Templates
+            const tplPath = "templates";
+            try {
+                const tempSnap = await getDocs(collection(db, tplPath));
+                tempSnap.forEach(doc => {
+                    templates[doc.id] = doc.data().message;
+                });
+                // Default templates if empty
+                if (Object.keys(templates).length === 0) {
+                    const defaults = {
+                        reminder2day: "Namaste {name} ji,\nAapki library membership fee ₹{amount} ki due date {dueDate} hai — sirf 2 din baaki hain.\nFee jama karne ke liye library mein aayein.\nDhanyawad!",
+                        reminderLastDay: "Namaste {name} ji,\nAaj {dueDate} ko aapki library fee ₹{amount} ki aakhri tarikh hai.\nAaj hi fee jama karein.\nLibrary Management",
+                        invoice: "Namaste {name} ji,\nAapki ₹{amount} fee {month} ke liye safaltapoorvak jama ho gayi.\nShukriya!\nLibrary Management",
+                        broadcast: "Namaste {name} ji,\nSpecial announcement for you.\nRegards,\nLibrary Management"
+                    };
+                    for (const [key, val] of Object.entries(defaults)) {
+                        await setDoc(doc(db, tplPath, key), { message: val, updatedAt: serverTimestamp() });
+                    }
+                    templates = defaults;
+                }
+                renderTemplates();
+            } catch (error) {
+                handleFirestoreError(error, OperationType.LIST, tplPath);
+            }
+        }
+
+        async function checkReminders() {
+            const today = new Date();
+            const todayDay = today.getDate();
+            const todayMonth = today.getMonth();
+            const todayYear = today.getFullYear();
+            const todayStr = today.toISOString().split('T')[0];
+
+            for (const student of students) {
+                if (student.status === 'Pending') {
+                    // Check if reminder already sent today
+                    if (student.lastReminderSent === todayStr) continue;
+
+                    let templateKey = null;
+                    if (student.dueDateDay === todayDay) {
+                        templateKey = 'reminderLastDay';
+                    } else {
+                        // Calculate days remaining
+                        let targetDate = new Date(todayYear, todayMonth, student.dueDateDay);
+                        if (student.dueDateDay < todayDay) {
+                            targetDate.setMonth(todayMonth + 1);
+                        }
+                        const diffTime = targetDate.getTime() - today.getTime();
+                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                        
+                        if (diffDays === 2) {
+                            templateKey = 'reminder2day';
+                        }
+                    }
+
+                    if (templateKey) {
+                        const msg = formatMessage(templates[templateKey], student);
+                        const success = await sendWhatsApp(student.phone, msg);
+                        if (success) {
+                            try {
+                                await updateDoc(doc(db, "students", student.id), {
+                                    lastReminderSent: todayStr
+                                });
+                                logReminder(`${templateKey === 'reminderLastDay' ? 'Last Day' : '2-Day'} reminder sent to ${student.name}`);
+                            } catch (error) {
+                                handleFirestoreError(error, OperationType.UPDATE, "students");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        function logReminder(msg) {
+            const list = $('reminderLogList');
+            const item = document.createElement('div');
+            item.className = 'py-2 border-b text-sm text-gray-600 flex justify-between';
+            item.innerHTML = `<span>🔔 ${msg}</span><span class="text-xs text-gray-400">${new Date().toLocaleTimeString()}</span>`;
+            list.prepend(item);
+            logActivity(msg);
+        }
+
+        function formatMessage(tpl, student) {
+            return tpl.replace(/{name}/g, student.name)
+                      .replace(/{amount}/g, student.feeAmount)
+                      .replace(/{dueDate}/g, `${student.dueDateDay} ${currentMonth}`)
+                      .replace(/{month}/g, currentMonth)
+                      .replace(/{phone}/g, student.phone);
+        }
+
+        // --- DASHBOARD ---
+        function updateDashboard() {
+            $('totalStudents').innerText = students.length;
+            $('paidCount').innerText = students.filter(s => s.status === 'Paid').length;
+            $('pendingCount').innerText = students.filter(s => s.status === 'Pending').length;
+            
+            const today = new Date().getDate();
+            $('dueTodayCount').innerText = students.filter(s => s.status === 'Pending' && s.dueDateDay === today).length;
+        }
+
+        function logActivity(msg) {
+            const list = $('activityList');
+            const item = document.createElement('div');
+            item.className = 'py-2 border-b text-sm text-gray-600 flex justify-between';
+            item.innerHTML = `<span>${msg}</span><span class="text-xs text-gray-400">${new Date().toLocaleTimeString()}</span>`;
+            list.prepend(item);
+        }
+
+        window.openAddStudentModal = () => {
+            $('studentId').value = '';
+            $('formName').value = '';
+            $('formPhone').value = '';
+            $('formAmount').value = '';
+            $('formDueDate').value = '';
+            $('formStatus').value = 'Pending';
+            $('modalTitle').innerText = 'Add New Student';
+            openModal('studentModal');
+        };
+
+        // --- STUDENTS MANAGEMENT ---
+        function renderStudents(filter = '') {
+            const tbody = $('studentsTableBody');
+            tbody.innerHTML = '';
+            
+            const filtered = students.filter(s => s.name.toLowerCase().includes(filter.toLowerCase()) || s.phone.includes(filter));
+
+            filtered.forEach(s => {
+                const tr = document.createElement('tr');
+                tr.className = 'border-b hover:bg-gray-50';
+                
+                const statusInfo = getStatusInfo(s);
+                
+                tr.innerHTML = `
+                    <td class="px-4 py-3">${s.name}</td>
+                    <td class="px-4 py-3">${s.phone}</td>
+                    <td class="px-4 py-3">₹${s.feeAmount}</td>
+                    <td class="px-4 py-3">${s.dueDateDay}th</td>
+                    <td class="px-4 py-3">
+                        <span class="px-2 py-1 rounded-full text-xs font-semibold ${statusInfo.class}">
+                            ${statusInfo.label}
+                        </span>
+                    </td>
+                    <td class="px-4 py-3 flex gap-2">
+                        <button onclick="editStudent('${s.id}')" class="text-blue-600 hover:underline">Edit</button>
+                        <button onclick="deleteStudent('${s.id}')" class="text-red-600 hover:underline">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function getStatusInfo(s) {
+            if (s.status === 'Paid') return { label: 'Paid', class: 'bg-green-100 text-green-700' };
+            const today = new Date().getDate();
+            if (s.dueDateDay === today) return { label: 'Due Today', class: 'bg-orange-100 text-orange-700' };
+            if (s.dueDateDay === today + 1 || s.dueDateDay === today + 2) return { label: 'Due in 2 days', class: 'bg-yellow-100 text-yellow-700' };
+            return { label: 'Pending', class: 'bg-red-100 text-red-700' };
+        }
+
+        window.submitStudentForm = async (e) => {
+            e.preventDefault();
+            const id = $('studentId').value;
+            const data = {
+                name: $('formName').value,
+                phone: $('formPhone').value,
+                feeAmount: Number($('formAmount').value),
+                dueDateDay: Number($('formDueDate').value),
+                status: $('formStatus').value,
+                updatedAt: serverTimestamp()
+            };
+
+            try {
+                if (id) {
+                    await updateDoc(doc(db, "students", id), data);
+                    showToast('Student updated!');
+                } else {
+                    data.createdAt = serverTimestamp();
+                    data.lastReminderSent = '';
+                    await addDoc(collection(db, "students"), data);
+                    showToast('Student added!');
+                }
+                closeModal('studentModal');
+            } catch (err) {
+                handleFirestoreError(err, OperationType.WRITE, "students");
+            }
+        };
+
+        window.editStudent = (id) => {
+            const s = students.find(x => x.id === id);
+            $('studentId').value = s.id;
+            $('formName').value = s.name;
+            $('formPhone').value = s.phone;
+            $('formAmount').value = s.feeAmount;
+            $('formDueDate').value = s.dueDateDay;
+            $('formStatus').value = s.status;
+            $('modalTitle').innerText = 'Edit Student';
+            openModal('studentModal');
+        };
+
+        window.deleteStudent = async (id) => {
+            if (confirm('Are you sure you want to delete this student?')) {
+                try {
+                    await deleteDoc(doc(db, "students", id));
+                    showToast('Student deleted');
+                } catch (error) {
+                    handleFirestoreError(error, OperationType.DELETE, "students");
+                }
+            }
+        };
+
+        window.searchStudents = (val) => renderStudents(val);
+
+        // --- SEND MESSAGE ---
+        function populateStudentSelects() {
+            // msgStudent special case: "Select Student"
+            $('msgStudent').innerHTML = '<option value="">Select Student</option>';
+            students.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s.id;
+                opt.innerText = `${s.name} (${s.phone})`;
+                $('msgStudent').appendChild(opt);
+            });
+        }
+
+        window.updatePreview = () => {
+            const studentId = $('msgStudent').value;
+            const text = $('msgText').value;
+            const preview = $('msgPreview');
+            
+            if (studentId) {
+                const s = students.find(x => x.id === studentId);
+                preview.innerText = formatMessage(text, s);
+            } else {
+                preview.innerText = text;
+            }
+            $('charCount').innerText = text.length;
+        };
+
+        window.sendMessage = async () => {
+            const studentId = $('msgStudent').value;
+            const customPhone = $('customPhone').value;
+            const text = $('msgText').value;
+
+            let phone = customPhone;
+            let message = text;
+
+            if (studentId) {
+                const s = students.find(x => x.id === studentId);
+                phone = s.phone;
+                message = formatMessage(text, s);
+            }
+
+            if (!phone) return showToast('Please select student or enter phone', 'error');
+            
+            const btn = $('sendMsgBtn');
+            btn.disabled = true;
+            btn.innerText = 'Sending...';
+            
+            await sendWhatsApp(phone, message);
+            
+            btn.disabled = false;
+            btn.innerText = 'Send Message';
+        };
+
+        // --- BROADCAST ---
+        function renderBroadcastList() {
+            const filter = $('broadcastStatusFilter').value;
+            const container = $('broadcastList');
+            container.innerHTML = '';
+            
+            let filtered = students;
+            if (filter !== 'All') filtered = students.filter(s => s.status === filter);
+
+            filtered.forEach(s => {
+                const div = document.createElement('div');
+                div.className = 'flex items-center gap-2 py-1 border-b';
+                div.innerHTML = `
+                    <input type="checkbox" class="broadcast-item" value="${s.id}" onchange="updateBroadcastCount()">
+                    <span class="text-sm">${s.name} (${s.phone})</span>
+                `;
+                container.appendChild(div);
+            });
+            updateBroadcastCount();
+        }
+
+        window.updateBroadcastCount = () => {
+            const checked = document.querySelectorAll('.broadcast-item:checked').length;
+            $('broadcastCount').innerText = `${checked} students selected`;
+        };
+
+        window.selectAllBroadcast = (checked) => {
+            document.querySelectorAll('.broadcast-item').forEach(cb => cb.checked = checked);
+            updateBroadcastCount();
+        };
+
+        window.sendBroadcast = async () => {
+            const selectedIds = Array.from(document.querySelectorAll('.broadcast-item:checked')).map(cb => cb.value);
+            const text = $('broadcastText').value;
+
+            if (selectedIds.length === 0) return showToast('Select at least one student', 'error');
+            
+            const btn = $('broadcastBtn');
+            const progress = $('broadcastProgress');
+            btn.disabled = true;
+            progress.classList.remove('hidden');
+
+            for (let i = 0; i < selectedIds.length; i++) {
+                const s = students.find(x => x.id === selectedIds[i]);
+                const msg = formatMessage(text, s);
+                
+                await sendWhatsApp(s.phone, msg);
+                
+                $('progressText').innerText = `Sent ${i + 1} of ${selectedIds.length}`;
+                if (i < selectedIds.length - 1) await new Promise(r => setTimeout(r, 2000)); // 2s delay
+            }
+
+            btn.disabled = false;
+            progress.classList.add('hidden');
+            showToast('Broadcast completed!');
+        };
+
+        // --- TEMPLATES ---
+        function renderTemplates() {
+            const container = $('templatesContainer');
+            container.innerHTML = '';
+            
+            for (const [id, msg] of Object.entries(templates)) {
+                const div = document.createElement('div');
+                div.className = 'bg-gray-50 p-4 rounded border mb-4';
+                div.innerHTML = `
+                    <h4 class="font-bold mb-2 capitalize">${id.replace(/([A-Z])/g, ' $1')}</h4>
+                    <textarea id="tpl-${id}" class="w-full p-2 border rounded h-24 text-sm mb-2">${msg}</textarea>
+                    <div class="flex justify-between items-center">
+                        <button onclick="saveTemplate('${id}')" class="bg-green-600 text-white px-4 py-1 rounded text-sm hover:bg-green-700">Save</button>
+                        <span class="text-xs text-gray-500">Variables: {name}, {amount}, {dueDate}, {month}</span>
+                    </div>
+                `;
+                container.appendChild(div);
+            }
+        }
+
+        window.saveTemplate = async (id) => {
+            const msg = $(`tpl-${id}`).value;
+            try {
+                await setDoc(doc(db, "templates", id), { message: msg, updatedAt: serverTimestamp() });
+                templates[id] = msg;
+                showToast('Template saved!');
+            } catch (error) {
+                handleFirestoreError(error, OperationType.WRITE, "templates");
+            }
+        };
+
+        // --- FEE MANAGEMENT ---
+        function renderFeeBatch() {
+            const tbody = $('feeTableBody');
+            tbody.innerHTML = '';
+            
+            students.forEach(s => {
+                const tr = document.createElement('tr');
+                tr.className = 'border-b';
+                tr.innerHTML = `
+                    <td class="px-4 py-3">${s.name}</td>
+                    <td class="px-4 py-3">₹${s.feeAmount}</td>
+                    <td class="px-4 py-3">${s.dueDateDay}th</td>
+                    <td class="px-4 py-3">
+                         <span class="px-2 py-1 rounded-full text-xs font-semibold ${s.status === 'Paid' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
+                            ${s.status}
+                        </span>
+                    </td>
+                    <td class="px-4 py-3">
+                        ${s.status === 'Pending' ? `<button onclick="markFeePaid('${s.id}')" class="bg-green-600 text-white px-3 py-1 rounded text-xs">Mark Paid & Invoice</button>` : `<span class="text-xs text-gray-400">Paid on ${s.lastPaidDate || 'N/A'}</span>`}
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        window.markFeePaid = async (id) => {
+            const s = students.find(x => x.id === id);
+            const dateStr = new Date().toLocaleDateString();
+            
+            try {
+                await updateDoc(doc(db, "students", id), {
+                    status: 'Paid',
+                    lastPaidDate: dateStr
+                });
+
+                const msg = formatMessage(templates.invoice, s);
+                await sendWhatsApp(s.phone, msg);
+                
+                showToast(`Fee for ${s.name} marked as paid. Invoice sent.`);
+                logActivity(`Fee received from ${s.name}`);
+            } catch (error) {
+                handleFirestoreError(error, OperationType.UPDATE, "students");
+            }
+        };
+
+
+        // Initialize
+        window.onload = () => {
+            loadData();
+            showSection('dashboard');
+            $('monthName').innerText = currentMonth;
+        };
+    </script>
+    <style>
+        .nav-link { transition: all 0.2s; cursor: pointer; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans text-gray-800 antialiased">
+
+    <div class="flex min-h-screen relative overflow-x-hidden">
+        
+        <!-- Mobile Overlay -->
+        <div id="sidebarOverlay" onclick="toggleSidebar()" class="hidden fixed inset-0 bg-black/50 z-40 lg:hidden"></div>
+
+        <!-- Sidebar -->
+        <aside id="sidebar" class="fixed inset-y-0 left-0 w-64 bg-white border-r flex flex-col z-50 transform -translate-x-full lg:translate-x-0 lg:static transition-transform duration-300 ease-in-out">
+            <div class="p-6 border-b flex justify-between items-center">
+                <h1 class="text-xl font-bold text-green-700 italic">📚 Aaradhya Library</h1>
+                <button onclick="toggleSidebar()" class="lg:hidden text-gray-500 hover:text-gray-700">
+                    ✕
+                </button>
+            </div>
+            <nav class="p-4 flex-1 overflow-y-auto">
+                <ul class="space-y-1">
+                    <li><a id="nav-desktop-dashboard" onclick="showSection('dashboard')" class="nav-link flex items-center gap-3 p-3 rounded-lg">🏠 Dashboard</a></li>
+                    <li><a id="nav-desktop-students" onclick="showSection('students')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">👨‍🎓 Students</a></li>
+                    <li><a id="nav-desktop-sendMessage" onclick="showSection('sendMessage')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">💬 Send Message</a></li>
+                    <li><a id="nav-desktop-broadcast" onclick="showSection('broadcast')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">📢 Broadcast</a></li>
+                    <li><a id="nav-desktop-templates" onclick="showSection('templates')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">📝 Templates</a></li>
+                    <li><a id="nav-desktop-feeManagement" onclick="showSection('feeManagement')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">💰 Fee Management</a></li>
+                </ul>
+            </nav>
+            <div class="p-4 border-t text-xs text-gray-400 text-center">
+                V1.0 - Library Management
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <div class="flex-1 flex flex-col w-full min-w-0">
+            <!-- Mobile Header -->
+            <header class="lg:hidden bg-white border-b p-4 flex justify-between items-center sticky top-0 z-30">
+                <button onclick="toggleSidebar()" class="p-2 text-gray-600 hover:bg-gray-100 rounded-lg">
+                    <span class="text-2xl">☰</span>
+                </button>
+                <h1 class="text-lg font-bold text-green-700 italic">📚 Aaradhya Library</h1>
+                <div class="w-10"></div> <!-- Spacer -->
+            </header>
+
+            <main class="flex-1 p-4 md:p-8 overflow-x-hidden container mx-auto">
+                <!-- Mobile Active Page Nav (Inline for quick switching) -->
+                <nav class="lg:hidden flex gap-2 overflow-x-auto pb-4 mb-4 border-b no-scrollbar">
+                    <a id="nav-mobile-dashboard" onclick="showSection('dashboard')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold">🏠 Home</a>
+                    <a id="nav-mobile-students" onclick="showSection('students')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">👨‍🎓 Students</a>
+                    <a id="nav-mobile-sendMessage" onclick="showSection('sendMessage')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">💬 Chat</a>
+                    <a id="nav-mobile-broadcast" onclick="showSection('broadcast')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">📢 All</a>
+                    <a id="nav-mobile-feeManagement" onclick="showSection('feeManagement')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">💰 Fees</a>
+                </nav>
+            
+            <!-- Dashboard -->
+            <section id="dashboard">
+                <header class="mb-6">
+                    <h2 class="text-xl md:text-2xl font-bold">Library Dashboard</h2>
+                    <p class="text-gray-500 text-sm md:text-base">Summary for <span id="monthName"></span></p>
+                </header>
+
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6 mb-8">
+                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border">
+                        <p class="text-gray-400 text-[10px] md:text-sm uppercase font-bold">Total</p>
+                        <h3 id="totalStudents" class="text-xl md:text-3xl font-bold">0</h3>
+                    </div>
+                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-green-100">
+                        <p class="text-green-500 text-[10px] md:text-sm uppercase font-bold">Paid</p>
+                        <h3 id="paidCount" class="text-xl md:text-3xl font-bold text-green-700">0</h3>
+                    </div>
+                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-red-100">
+                        <p class="text-red-500 text-[10px] md:text-sm uppercase font-bold">Pending</p>
+                        <h3 id="pendingCount" class="text-xl md:text-3xl font-bold text-red-700">0</h3>
+                    </div>
+                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-orange-100">
+                        <p class="text-orange-500 text-[10px] md:text-sm uppercase font-bold">Due</p>
+                        <h3 id="dueTodayCount" class="text-xl md:text-3xl font-bold text-orange-700">0</h3>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div class="bg-white rounded-xl shadow-sm border p-6">
+                        <h4 class="font-bold mb-4">Recent Activity</h4>
+                        <div id="activityList" class="space-y-1 max-h-60 overflow-y-auto">
+                            <!-- Activity items -->
+                        </div>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-sm border p-6">
+                        <h4 class="font-bold mb-4">Automated Reminder Log</h4>
+                        <div id="reminderLogList" class="space-y-1 max-h-60 overflow-y-auto">
+                            <!-- Reminder items -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Students Management -->
+            <section id="students" class="hidden">
+                <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
+                    <h2 class="text-2xl font-bold">Students</h2>
+                    <button onclick="openAddStudentModal()" class="w-full md:w-auto bg-green-600 text-white px-6 py-2.5 rounded-lg font-semibold hover:bg-green-700 transition shadow-sm">+ Add Student</button>
+                </header>
+
+                <div class="bg-white rounded-xl shadow-sm border mb-8">
+                    <div class="p-4 border-b">
+                        <input type="text" oninput="searchStudents(this.value)" placeholder="Search students..." class="w-full md:w-80 p-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-sm">
+                    </div>
+                    <div class="overflow-x-auto min-w-full">
+                        <table class="w-full text-left whitespace-nowrap">
+                            <thead class="bg-gray-50 text-xs uppercase font-bold text-gray-500">
+                                <tr>
+                                    <th class="px-4 py-3">Name</th>
+                                    <th class="px-4 py-3">Phone</th>
+                                    <th class="px-4 py-3">Fee Amount</th>
+                                    <th class="px-4 py-3">Due Date</th>
+                                    <th class="px-4 py-3">Status</th>
+                                    <th class="px-4 py-3">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="studentsTableBody">
+                                <!-- Student rows -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Send Message -->
+            <section id="sendMessage" class="hidden">
+                <header class="mb-8">
+                    <h2 class="text-2xl font-bold">Send Message</h2>
+                </header>
+                <div class="max-w-xl mx-auto lg:mx-0 bg-white p-4 md:p-8 rounded-xl shadow-sm border">
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-1">Select Student</label>
+                        <select id="msgStudent" onchange="updatePreview()" class="w-full p-2 border rounded-lg">
+                            <option value="">Select Student</option>
+                        </select>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-1">Or Enter Number (91XXXXXXXXXX)</label>
+                        <input type="text" id="customPhone" placeholder="91..." class="w-full p-2 border rounded-lg">
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium mb-1">Message</label>
+                        <textarea id="msgText" oninput="updatePreview()" class="w-full p-2 border rounded-lg h-32"></textarea>
+                        <p class="text-xs text-gray-400 mt-1">Character Count: <span id="charCount">0</span></p>
+                    </div>
+                    <div class="bg-gray-50 p-4 rounded-lg border mb-6">
+                        <p class="text-xs font-bold text-gray-400 mb-2 uppercase">Message Preview</p>
+                        <p id="msgPreview" class="text-sm italic text-gray-600 whitespace-pre-wrap"></p>
+                    </div>
+                    <button id="sendMsgBtn" onclick="sendMessage()" class="bg-green-600 text-white w-full py-3 rounded-lg font-bold hover:bg-green-700">Send Message</button>
+                </div>
+            </section>
+
+            <!-- Broadcast -->
+            <section id="broadcast" class="hidden">
+                <header class="mb-8">
+                    <h2 class="text-2xl font-bold">Broadcast</h2>
+                </header>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-8">
+                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border">
+                        <h4 class="font-bold mb-4">Target Students</h4>
+                        <div class="flex flex-col sm:flex-row gap-3 mb-4">
+                            <select id="broadcastStatusFilter" onchange="renderBroadcastList()" class="flex-1 p-2 border rounded text-sm bg-white">
+                                <option value="All">All Students</option>
+                                <option value="Pending">Only Pending</option>
+                                <option value="Paid">Only Paid</option>
+                            </select>
+                            <label class="flex items-center gap-2 text-sm">
+                                <input type="checkbox" onchange="selectAllBroadcast(this.checked)"> Select All
+                            </label>
+                        </div>
+                        <div id="broadcastList" class="max-h-80 overflow-y-auto border p-2 rounded">
+                            <!-- Checkbox list -->
+                        </div>
+                        <p id="broadcastCount" class="text-sm mt-2 text-gray-500 font-semibold"></p>
+                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm border">
+                        <h4 class="font-bold mb-4">Broadcast Content</h4>
+                        <textarea id="broadcastText" class="w-full p-2 border rounded-lg h-40 mb-4" placeholder="Type message here... Use {name} for personalization"></textarea>
+                        
+                        <div id="broadcastProgress" class="hidden mb-4 p-3 bg-blue-50 border border-blue-200 rounded">
+                            <p id="progressText" class="text-sm text-blue-700"></p>
+                            <div class="w-full bg-blue-200 h-2 mt-2 rounded overflow-hidden">
+                                <div class="bg-blue-600 h-full animate-pulse" style="width: 50%"></div>
+                            </div>
+                        </div>
+
+                        <button id="broadcastBtn" onclick="sendBroadcast()" class="bg-green-600 text-white w-full py-3 rounded-lg font-bold hover:bg-green-700">Send Broadcast</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Message Templates -->
+            <section id="templates" class="hidden">
+                 <header class="mb-8">
+                    <h2 class="text-2xl font-bold">Message Templates</h2>
+                    <p class="text-gray-500 text-sm italic mt-1">Stored in Firebase for consistency across devices.</p>
+                </header>
+                <div id="templatesContainer" class="max-w-3xl">
+                    <!-- Template cards -->
+                </div>
+            </section>
+
+            <!-- Fee Management -->
+            <section id="feeManagement" class="hidden">
+                <header class="mb-8">
+                    <h2 class="text-2xl font-bold">Fees</h2>
+                    <p class="text-gray-500 text-sm md:text-base">Record payments and send invoices.</p>
+                </header>
+                <div class="bg-white rounded-xl shadow-sm border overflow-hidden">
+                    <div class="overflow-x-auto min-w-full">
+                        <table class="w-full text-left whitespace-nowrap">
+                        <thead class="bg-gray-50 text-sm font-bold">
+                            <tr>
+                                <th class="px-4 py-3">Student Name</th>
+                                <th class="px-4 py-3">Fee Amount</th>
+                                <th class="px-4 py-3">Due Day</th>
+                                <th class="px-4 py-3">Status</th>
+                                <th class="px-4 py-3">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="feeTableBody">
+                            <!-- Fee list -->
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+        </main>
+        </div>
+    </div>
+
+    <!-- Student Modal -->
+    <div id="studentModal" class="hidden fixed inset-0 bg-black/50 flex justify-center items-center p-4 z-50">
+        <div class="bg-white w-full max-w-md rounded-xl p-8">
+            <h3 id="modalTitle" class="text-xl font-bold mb-6">Add Student</h3>
+            <form onsubmit="submitStudentForm(event)">
+                <input type="hidden" id="studentId">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Name</label>
+                        <input id="formName" type="text" required class="w-full p-2 border rounded text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Phone Number (with 91 prefix, e.g. 919876543210)</label>
+                        <input id="formPhone" type="text" required pattern="^91\d{10}$" title="Start with 91 followed by 10 digits" class="w-full p-2 border rounded text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Fee Amount (₹)</label>
+                        <input id="formAmount" type="number" required class="w-full p-2 border rounded text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Fee Due Date (Day of Month, e.g. 5)</label>
+                        <input id="formDueDate" type="number" min="1" max="31" required class="w-full p-2 border rounded text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Status</label>
+                        <select id="formStatus" class="w-full p-2 border rounded text-sm">
+                            <option value="Pending">Pending</option>
+                            <option value="Paid">Paid</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="flex gap-4 mt-8">
+                    <button type="button" onclick="closeModal('studentModal')" class="flex-1 border py-2 rounded-lg text-sm font-bold">Cancel</button>
+                    <button type="submit" class="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-green-700">Save Student</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed bottom-4 right-4 px-6 py-3 rounded shadow-lg text-white opacity-0 transition-opacity duration-300 z-[100]"></div>
+
+</body>
+</html>

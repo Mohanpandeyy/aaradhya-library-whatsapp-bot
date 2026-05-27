@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "student": {
+      "title": "Student",
+      "description": "Student record in the library system",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "feeAmount": { "type": "number" },
+        "dueDateDay": { "type": "number" },
+        "status": { "type": "string", "enum": ["Paid", "Pending"] },
+        "lastPaidDate": { "type": "string", "format": "date-time" },
+        "lastReminderSent": { "type": "string", "format": "date-time" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "phone", "feeAmount", "dueDateDay", "status"]
+    },
+    "template": {
+      "title": "Message Template",
+      "description": "WhatsApp message template",
+      "type": "object",
+      "properties": {
+        "message": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["message"]
+    }
+  },
+  "firestore": {
+    "students": {
+      "schema": "student",
+      "description": "Collection of students"
+    },
+    "templates": {
+      "schema": "template",
+      "description": "Collection of message templates"
+    }
+  }
+}

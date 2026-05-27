@@ -1,0 +1,6 @@
+{
+  "name": "Library Management System",
+  "description": "A comprehensive library management system with student tracking, fee management, and WhatsApp integration via Green API.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
