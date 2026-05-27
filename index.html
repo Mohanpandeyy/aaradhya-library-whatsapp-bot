@@ -7,6 +7,45 @@
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="/src/index.css">
+    <style>
+        @media print {
+            /* Hide absolutely everything on the page */
+            body > *:not(#invoiceModal) {
+                display: none !important;
+            }
+            /* Explicitly show the invoice modal container and make it look clean */
+            #invoiceModal {
+                display: block !important;
+                position: absolute !important;
+                left: 0 !important;
+                top: 0 !important;
+                width: 100% !important;
+                height: auto !important;
+                background: white !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                box-shadow: none !important;
+                z-index: 9999999 !important;
+                overflow: visible !important;
+            }
+            /* Make the inner contents fill the printed frame properly */
+            #invoiceModal > div {
+                box-shadow: none !important;
+                border: none !important;
+                max-width: 100% !important;
+                background: white !important;
+                padding: 10px !important;
+                margin: 0 !important;
+                width: 100% !important;
+                height: auto !important;
+                overflow: visible !important;
+            }
+            /* Hide non-printable items */
+            .print\:hidden, button.print\:hidden, div.print\:hidden {
+                display: none !important;
+            }
+        }
+    </style>
     <!-- Firebase App/Firestore SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.22.1/firebase-app.js";
@@ -20,7 +59,7 @@
             const toast = $('toast');
             if (!toast) return;
             toast.innerText = msg;
-            toast.className = `fixed bottom-4 right-4 px-6 py-3 rounded shadow-lg text-white transition-opacity duration-300 z-[100] ${type === 'success' ? 'bg-green-600' : 'bg-red-600'}`;
+            toast.className = `fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 max-w-md mx-auto sm:mx-0 px-6 py-3 rounded-xl shadow-lg text-white transition-opacity duration-300 z-[100] ${type === 'success' ? 'bg-green-600' : 'bg-red-600'}`;
             toast.classList.remove('opacity-0');
             setTimeout(() => toast.classList.add('opacity-0'), 3000);
         }
@@ -46,13 +85,14 @@
         };
 
         function handleFirestoreError(error, operationType, path) {
-          const errInfo = {
-            error: error instanceof Error ? error.message : String(error),
+          const errMessage = error instanceof Error ? error.message : String(error);
+          console.error('Firestore Error:', {
+            error: errMessage,
             operationType,
-            path
-          };
-          console.error('Firestore Error: ', JSON.stringify(errInfo));
-          showToast(`Database Error: ${errInfo.error}`, 'error');
+            path,
+            originalError: error
+          });
+          showToast(`Database Error: ${errMessage}`, 'error');
         }
 
         // --- FIREBASE CONFIG ---
@@ -90,13 +130,17 @@
         let config = {
             libraryName: 'Aaradhya Library',
             upiId: 'example@okicici',
-            defaultFee: 500
+            defaultFee: 500,
+            totalSeats: 18,
+            reminderTime: '10:00'
         };
         let currentMonth = new Date().toLocaleString('default', { month: 'long' });
         let currentYear = new Date().getFullYear();
+        let messageQueue = [];
+        window.messageQueue = messageQueue;
 
         // DOM Elements
-        const sections = ['dashboard', 'students', 'sendMessage', 'broadcast', 'templates', 'feeManagement', 'feeHistory', 'settings'];
+        const sections = ['dashboard', 'students', 'sendMessage', 'broadcast', 'templates', 'feeManagement', 'feeHistory', 'settings', 'seats'];
 
         // --- SECTION MANAGEMENT ---
         window.toggleSidebar = () => {
@@ -143,19 +187,35 @@
             if (sectionId === 'feeManagement') renderFeeBatch();
             if (sectionId === 'feeHistory') renderFeeHistory();
             if (sectionId === 'broadcast') renderBroadcastList();
-            if (sectionId === 'settings') renderSettings();
+            if (sectionId === 'settings') { renderSettings(); renderSnapshotBackups(); }
+            if (sectionId === 'seats') renderSeats();
+        };
+
+        window.prefillMessage = (studentId, phone) => {
+            window.showSection('sendMessage');
+            const selectEl = $('msgStudent');
+            const phoneEl = $('customPhone');
+            if (selectEl) {
+                selectEl.value = studentId || '';
+            }
+            if (phoneEl) {
+                phoneEl.value = phone || '';
+            }
+            if (window.updatePreview) {
+                window.updatePreview();
+            }
         };
 
         // --- WHATSAPP FUNCTIONS ---
-        async function sendWhatsApp(phone, message, options = {}) {
+        async function sendWhatsAppDirectly(phone, message, options = {}) {
             try {
                 const formData = new FormData();
                 formData.append('phone', phone);
                 formData.append('message', message);
                 
                 // Pass config to override backend env vars
-                formData.append('upiId', config.upiId);
-                formData.append('upiName', config.libraryName);
+                formData.append('upiId', config.upiId || '');
+                formData.append('upiName', config.libraryName || 'Aaradhya Library');
                 
                 if (options.photo) {
                     formData.append('photo', options.photo);
@@ -164,6 +224,17 @@
                     formData.append('sendQR', 'true');
                     formData.append('amount', options.amount || 0);
                     formData.append('studentName', options.studentName || '');
+                }
+                if (options.sendPDF === 'true' || options.sendPDF === true) {
+                    formData.append('sendPDF', 'true');
+                    formData.append('invoiceNo', options.invoiceNo || '');
+                    formData.append('studentName', options.studentName || '');
+                    formData.append('date', options.date || '');
+                    formData.append('amount', options.amount || '');
+                    formData.append('duration', options.duration || '');
+                    formData.append('seat', options.seat || '');
+                    formData.append('validTill', options.validTill || '');
+                    formData.append('libraryName', options.libraryName || '');
                 }
 
                 const waResponse = await window.fetch('/api/send-message', {
@@ -185,6 +256,275 @@
             }
         }
 
+        async function sendWhatsApp(phone, message, options = {}) {
+            if (options.bypassQueue) {
+                return await sendWhatsAppDirectly(phone, message, options);
+            }
+
+            const isWelcome = options.isWelcome || false;
+            const delaySeconds = isWelcome ? 10 : 60;
+
+            const studentItem = students.find(s => s.phone === phone);
+            const studentName = studentItem ? studentItem.name : (options.studentName || 'Student');
+
+            const queueItem = {
+                id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+                phone: phone,
+                message: message,
+                options: options,
+                studentName: studentName,
+                type: isWelcome ? 'Welcome Admission' : (options.type || 'WhatsApp Message'),
+                timeLeft: delaySeconds,
+                totalTime: delaySeconds,
+                status: 'active',
+                createdAt: new Date()
+            };
+
+            messageQueue.push(queueItem);
+            window.messageQueue = messageQueue;
+            
+            showToast(`Message queued in outbox (${delaySeconds}s delay)`, 'success');
+            
+            const panel = $('outboxQueuePanel');
+            if (panel && panel.classList.contains('hidden')) {
+                panel.classList.remove('hidden');
+            }
+
+            renderOutboxQueue();
+            return true;
+        }
+
+        // Interval ticker for outbox queue items (ticks once every second)
+        setInterval(() => {
+            if (messageQueue.length > 0) {
+                let changed = false;
+                const itemsToProcess = [...messageQueue];
+                itemsToProcess.forEach(item => {
+                    if (item.status === 'active') {
+                        item.timeLeft -= 1;
+                        changed = true;
+                        if (item.timeLeft <= 0) {
+                            item.status = 'sending';
+                            messageQueue = messageQueue.filter(x => x.id !== item.id);
+                            window.messageQueue = messageQueue;
+                            
+                            sendWhatsAppDirectly(item.phone, item.message, { ...item.options, bypassQueue: true })
+                                .then(success => {
+                                    if (success) {
+                                        showToast(`Outbox: Message to ${item.studentName} sent successfully!`);
+                                    } else {
+                                        showToast(`Outbox: Message to ${item.studentName} failed to send.`, 'error');
+                                    }
+                                    renderOutboxQueue();
+                                });
+                        }
+                    }
+                });
+                if (changed) {
+                    renderOutboxQueue();
+                }
+            }
+        }, 1000);
+
+        window.sendQueueMessageNow = async (id) => {
+            const item = messageQueue.find(x => x.id === id);
+            if (!item) return;
+            item.status = 'sending';
+            messageQueue = messageQueue.filter(x => x.id !== id);
+            window.messageQueue = messageQueue;
+            renderOutboxQueue();
+            
+            const success = await sendWhatsAppDirectly(item.phone, item.message, { ...item.options, bypassQueue: true });
+            if (success) {
+                showToast(`Sent successfully!`);
+            } else {
+                showToast(`Failed to send!`, 'error');
+            }
+            renderOutboxQueue();
+        };
+
+        window.toggleQueueMessageStatus = (id) => {
+            const item = messageQueue.find(x => x.id === id);
+            if (!item) return;
+            item.status = item.status === 'active' ? 'paused' : 'active';
+            showToast(item.status === 'active' ? 'Timer Resumed' : 'Timer Paused', 'info');
+            renderOutboxQueue();
+        };
+
+        window.delayQueueMessage = (id, seconds) => {
+            const item = messageQueue.find(x => x.id === id);
+            if (!item) return;
+            item.timeLeft += seconds;
+            item.totalTime += seconds;
+            showToast(`Delayed by ${seconds} seconds`, 'info');
+            renderOutboxQueue();
+        };
+
+        window.toggleRescheduleInline = (id) => {
+            const panel = $(`reschedule-panel-${id}`);
+            if (panel) {
+                panel.classList.toggle('hidden');
+            }
+        };
+
+        window.applyCustomReschedule = (id) => {
+            const input = $(`reschedule-input-${id}`);
+            if (!input) return;
+            const val = parseInt(input.value, 10);
+            if (!isNaN(val) && val >= 0) {
+                const item = messageQueue.find(x => x.id === id);
+                if (item) {
+                    item.timeLeft = val;
+                    if (val > item.totalTime) {
+                        item.totalTime = val;
+                    }
+                    showToast(`Countdown rescheduled to ${val}s`, 'info');
+                    renderOutboxQueue();
+                }
+            } else {
+                showToast('Please enter a valid number of seconds', 'error');
+            }
+        };
+
+        window.cancelQueueMessage = (id) => {
+            messageQueue = messageQueue.filter(x => x.id !== id);
+            window.messageQueue = messageQueue;
+            showToast('Message cancelled & dropped', 'error');
+            renderOutboxQueue();
+        };
+
+        window.toggleOutboxPanel = () => {
+            const panel = $('outboxQueuePanel');
+            if (panel) {
+                panel.classList.toggle('hidden');
+            }
+        };
+
+        window.clearAllOutboxQueue = () => {
+            if (messageQueue.length === 0) return;
+            messageQueue = [];
+            window.messageQueue = [];
+            showToast('Cleared all pending queue items.', 'error');
+            renderOutboxQueue();
+        };
+
+        function renderOutboxQueue() {
+            const list = $('outboxQueueList');
+            const badgeCount = $('outboxBadgeCount');
+            const queueCountBadge = $('queueCountBadge');
+            const outboxPulsePing = $('outboxPulsePing');
+            const outboxPulseStatic = $('outboxPulseStatic');
+            const launcher = $('outboxLauncherBtn');
+
+            if (!list) return;
+
+            const count = messageQueue.length;
+            if (badgeCount) badgeCount.innerText = count;
+            if (queueCountBadge) queueCountBadge.innerText = count;
+
+            if (count > 0) {
+                if (outboxPulsePing) outboxPulsePing.classList.remove('hidden');
+                if (outboxPulseStatic) outboxPulseStatic.className = 'relative inline-flex rounded-full h-3 w-3 bg-emerald-500';
+                if (launcher) {
+                    launcher.classList.remove('from-blue-600', 'to-indigo-600');
+                    launcher.classList.add('from-emerald-600', 'to-teal-600');
+                }
+            } else {
+                if (outboxPulsePing) outboxPulsePing.classList.add('hidden');
+                if (outboxPulseStatic) outboxPulseStatic.className = 'relative inline-flex rounded-full h-3 w-3 bg-gray-400';
+                if (launcher) {
+                    launcher.classList.remove('from-emerald-600', 'to-teal-600');
+                    launcher.classList.add('from-blue-600', 'to-indigo-600');
+                }
+            }
+
+            if (count === 0) {
+                list.innerHTML = `
+                    <div class="text-center text-sm text-gray-450 py-8 italic flex flex-col items-center justify-center gap-1.5">
+                        <span class="text-2xl">💤</span>
+                        <span>Outbox queue is empty.</span>
+                        <span class="text-[10px] text-gray-400 font-medium">All student alerts sent/processed.</span>
+                    </div>
+                `;
+                return;
+            }
+
+            list.innerHTML = '';
+            messageQueue.forEach(item => {
+                const isPaused = item.status === 'paused';
+                const percent = Math.max(0, Math.min(100, (item.timeLeft / item.totalTime) * 100));
+                
+                const card = document.createElement('div');
+                card.className = `p-3 bg-white rounded-xl border shadow-sm transition-all relative overflow-hidden ${isPaused ? 'border-amber-200' : 'border-gray-100 hover:border-gray-200'}`;
+                
+                const barColor = item.totalTime <= 10 ? 'bg-emerald-500' : 'bg-blue-500';
+
+                card.innerHTML = `
+                    <div class="absolute bottom-0 left-0 h-1 transition-all duration-1000 ${barColor}" style="width: ${percent}%"></div>
+                    
+                    <div class="flex justify-between items-start mb-1.5">
+                        <div>
+                            <div class="flex items-center gap-1.5 flex-wrap">
+                                <h4 class="font-bold text-sm text-gray-800">${item.studentName}</h4>
+                                <span class="text-[10px] font-semibold px-2 py-0.5 rounded-full ${item.totalTime <= 10 ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-800'}">
+                                    ${item.type}
+                                </span>
+                            </div>
+                            <p class="text-xs text-gray-450 font-mono">${item.phone}</p>
+                        </div>
+                        <div class="text-right">
+                            <span class="text-sm font-semibold font-mono text-gray-900 ${isPaused ? 'animate-pulse text-amber-500' : 'text-blue-600'}">
+                                ${isPaused ? '⏸ Paused' : `${item.timeLeft}s`}
+                            </span>
+                        </div>
+                    </div>
+
+                    <div class="text-[11px] bg-gray-50 p-2 rounded text-gray-600 font-sans line-clamp-2 max-h-12 overflow-hidden mb-2.5 break-words">
+                        ${item.message.replace(/\n/g, ' ')}
+                    </div>
+
+                    <div class="flex items-center justify-between gap-1 mt-2">
+                        <button onclick="toggleQueueMessageStatus('${item.id}')" 
+                                title="${isPaused ? 'Resume count' : 'Pause count'}" 
+                                class="flex-1 py-1 px-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-[11px] font-semibold transition-all flex items-center justify-center gap-1">
+                            ${isPaused ? '▶️ Resume' : '⏸ Pause'}
+                        </button>
+
+                        <button onclick="sendQueueMessageNow('${item.id}')" 
+                                class="flex-1 py-1 px-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[11px] font-semibold transition-all flex items-center justify-center gap-1">
+                            ⚡ Send
+                        </button>
+
+                        <button onclick="toggleRescheduleInline('${item.id}')" 
+                                class="py-1 px-2 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg text-[11px] font-semibold transition-all"
+                                title="Set counter duration">
+                            🕒 Resched
+                        </button>
+
+                        <button onclick="cancelQueueMessage('${item.id}')" 
+                                class="py-1 px-2 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg text-[11px] font-semibold transition-all"
+                                title="Cancel and Delete">
+                            ✕
+                        </button>
+                    </div>
+
+                    <div id="reschedule-panel-${item.id}" class="hidden mt-3 p-2 bg-slate-50 border border-slate-100 rounded-lg flex items-center gap-2 justify-between">
+                        <div class="flex items-center gap-1 text-[10px] text-gray-500 font-semibold">
+                            <span>Sec:</span>
+                            <input id="reschedule-input-${item.id}" type="number" value="${item.timeLeft}" class="w-14 p-1 border rounded text-center text-xs text-black font-bold">
+                        </div>
+                        <div class="flex gap-1">
+                            <button onclick="applyCustomReschedule('${item.id}')" class="bg-blue-600 text-white px-2 py-0.5 rounded text-[10px] font-bold">Set</button>
+                            <button onclick="delayQueueMessage('${item.id}', 60)" class="bg-gray-200 text-gray-700 px-2 py-0.5 rounded text-[10px] font-bold">+1m</button>
+                            <button onclick="toggleRescheduleInline('${item.id}')" class="text-gray-400 font-bold px-1 text-xs">✕</button>
+                        </div>
+                    </div>
+                `;
+                list.appendChild(card);
+            });
+        }
+        window.renderOutboxQueue = renderOutboxQueue;
+
         // --- DATA FETCHING & REMINDERS ---
         let reminderCheckDone = false;
 
@@ -193,15 +533,39 @@
             // Real-time students
             onSnapshot(collection(db, path), (snapshot) => {
                 students = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                
+                // Auto-rollback expired paid status to Pending
+                const todayStr = new Date().toLocaleDateString('en-CA');
+                snapshot.docs.forEach(async (docSnap) => {
+                    const data = docSnap.data();
+                    if (data.status === 'Paid' && data.nextDueDate && todayStr >= data.nextDueDate) {
+                        try {
+                            await updateDoc(doc(db, "students", docSnap.id), {
+                                status: 'Pending',
+                                updatedAt: serverTimestamp()
+                            });
+                        } catch (err) {
+                            console.warn("Automatic status expiration failed:", err);
+                        }
+                    }
+                });
+
                 renderStudents();
                 updateDashboard();
                 renderFeeBatch();
                 populateStudentSelects();
+                if (window.renderSeats) window.renderSeats();
                 
                 // Run reminder check once after data is first loaded
                 if (!reminderCheckDone && students.length > 0) {
                     checkReminders();
                     reminderCheckDone = true;
+                    // Trigger automated weekly snapshot check 2 seconds after initialization so we don't block the UI threads
+                    setTimeout(() => {
+                        if (typeof checkAndCreateWeeklySnapshot === "function") {
+                            checkAndCreateWeeklySnapshot();
+                        }
+                    }, 2000);
                 }
             }, (error) => {
                 handleFirestoreError(error, OperationType.GET, path);
@@ -225,14 +589,15 @@
                 // Default templates if empty
                 if (Object.keys(templates).length === 0) {
                     const defaults = {
-                        reminder2day: "Namaste {name} ji, Aapki {libraryName} fee ₹{amount} ki due date {dueDate} hai. Kripya samay par jama karein taaki hum aapki seat secure rakh sakein. - {libraryName}",
-                        reminderToday: "Namaste {name} ji, Aaj {dueDate} aapki {libraryName} fee jama karne ki aakhri tarikh hai. Kripya aaj hi payment karein. - {libraryName}",
-                        overdueDay1: "Namaste {name} ji, Aapki {libraryName} fee ({dueDate}) ko due thi par abhi tak pending hai. Kripya dhyan dein aur turant payment karein. - {libraryName}",
-                        overdueDay2: "Alert: {name} ji, aapne abhi tak fee jama nahi ki hai. Due date nikle 2 din ho gaye hain. Management seat block kar sakta hai. Kripya aaj hi pay karein. - {libraryName}",
-                        finalWarning: "⚠️ FINAL NOTICE: {name} ji, agar aaj dopahar tak fee jama nahi hui toh aapki seat kisi aur student ko allot kar di jaayegi. Seat bachane ke liye turant sampark karein. - {libraryName}",
-                        seatCancelled: "🚫 SEAT CANCELLED: {name} ji, aapki fee due date se 4 din upar ho chuki hai. Aapki seat ab block kar di gayi hai aur kisi aur ko allot kar di jaayegi. - {libraryName}",
-                        invoice: "Namaste {name} ji, Aapki ₹{amount} fee successully jama ho gayi hai. Thank you! - {libraryName}",
-                        broadcast: "Namaste {name} ji,\n{libraryName} announcement: [Your Message Here]\n- {libraryName}"
+                        reminder2day: "⏳ *FEE REMINDER* ⏳\n🔔 *{libraryName}*\n----------------------------------------\n*Namaste {name} ji,*\n\nAapki monthly library fee *₹{amount}* ki due date *{dueDate}* hai (baaki hain: 2 din). \n\n📚 Kripya samay par fee jama karein taaki aapki reserved study seat secure rahe aur continuous access chalta rahe.\n\n🌐 *UPI ID:* {upiId}\n\nWebsite: https://hariharpur-library.vercel.app/\n----------------------------------------\nThank you! 🙏",
+                        reminderToday: "🚨 *FEE DUE TODAY* 🚨\n🔔 *{libraryName}*\n----------------------------------------\n*Namaste {name} ji,*\n\n*Aaj ({dueDate})* aapki monthly library fee *₹{amount}* jama karne ki aakhri tarikh hai.\n\n⚠️ Seat blocked hone se bachane ke liye kripya aaj hi payment clear karein aur receipt update karein.\n\n📱 *UPI ID:* {upiId}\n\nWebsite: https://hariharpur-library.vercel.app/\n----------------------------------------\nThank you for cooperating! 🙏",
+                        overdueDay1: "⚠️ *FEE OVERDUE NOTICE* ⚠️\n🔔 *{libraryName}*\n----------------------------------------\n*Namaste {name} ji,*\n\nAapki monthly library fee (*₹{amount}*) ki due date *{dueDate}* kal nikal chuki hai aur payment abhi tak pending hai.\n\nKripya turant payment karke seats system me entry karvayein taaki seat block na ho.\n\n----------------------------------------\n📱 *UPI ID:* {upiId}\n*Support:* {libraryName} Management Center",
+                        overdueDay2: "🛑 *URGENT: LEASE OVERDUE* 🛑\n🔔 *{libraryName}*\n----------------------------------------\n*ALERT: {name} ji,*\n\nAapki library seat fee delayed hue *2 din* se zyada ho chuke hain. Aapki desk seat cancel/block hone ki kagar par hai.\n\nKripya turant management se sampark karein ya aaj hi seat secure karne ke liye payment clear karein:\n\n📱 *UPI ID:* {upiId}\n----------------------------------------",
+                        finalWarning: "🔥 *FINAL WARNING NOTICE* 🔥\n🔔 *{libraryName}*\n----------------------------------------\n*⚠️ ATTENTION {name} ji,*\n\nAgar aaj dopahar tak aapki monthly fee *₹{amount}* jama nahi hui, toh aapki assigned seat automatically kisi aur waiting list student ko allot kar di jaayegi.\n\nSeat bachane ki aakhri suvidha ke liye turant pay karein aur screenshot share karein.\n\n📱 *UPI ID:* {upiId}\n----------------------------------------",
+                        seatCancelled: "🚫 *SEAT DISMISSED & RELEASED* 🚫\n🔔 *{libraryName}*\n----------------------------------------\n*Dear Student {name},*\n\nAapki library seat due date se *4 din upar* delayed ho chuki hai. \n\nTabaah/unpaid status ke chalte aapki assigned desk seats release kar di gayi hai. Ab aap library desk use nahi kar payenge. Naye registration ke liye desk counter par sampark karein.",
+                        invoice: "🧾 *TAX INVOICE / RECEIPT*\n🔔 *{libraryName}*\n----------------------------------------\n*Namaste {name} ji,*\nAapki *₹{amount}* fee *{duration} Month(s)* ke liye safaltapoorvak jama ho gayi hai.\nDhanyavaad! 🙏\n----------------------------------------\n*INVOICE DETAILS:*\n*Invoice No:* {invoiceNo}\n*Date:* {date}\n*UPI ID:* {upiId}\n----------------------------------------\n*MEMBER & DESK:*\n*Student:* {name}\n*Phone:* {phone}\n*Assigned Desk:* {seat}\n----------------------------------------\n*FEES SUMMARY:*\n*Study Slot:* Full-Day Access\n*Seat Desk:* {seat}\n*Duration:* {duration} Month(s)\n*Net Price:* *₹{amount}.00*\n*Payment Status:* *COMPLETED ✅*\n----------------------------------------\n📅 *VALIDITY PERIOD:*\n*Valid Till:* *{nextDueDate}*\n----------------------------------------\n*Visit Our Website:*\n➡️ https://hariharpur-library.vercel.app/\n----------------------------------------\n_Digital Receipt & PDF copy Generated Successfully!_",
+                        broadcast: "🔔 *IMPORTANT ANNOUNCEMENT* 🔔\n🏛️ *{libraryName}*\n----------------------------------------\nNamaste {name} ji,\n\n{libraryName} update: [Your Message Here]\n\n----------------------------------------\nVisit our portal for updates: https://hariharpur-library.vercel.app/",
+                        welcome: "🎉 *ADMISSION CONFIRMED!* 🎉\n🔔 *{libraryName}*\n----------------------------------------\n*Namaste {name} ji,*\n\nAapka admission *{libraryName}* me safaltapoorvak ho gaya hai! \n\n🪑 *Assigned Seat Desk:* {seat}\n📅 *Study Slot / Shift:* {slot}\n\n📚 Aapka study slot aur seat desk allocate kar diya gaya hai.\n\n👥 *Join Our WhatsApp Group For Daily Updates:*\n👉 {groupLink}\n\n🌐 *Visit Our Student Portal / Website:*\n👉 https://hariharpur-library.vercel.app/\n----------------------------------------\nDhanyavaad! Hum aapki safe aur peaceful self-study journey ki kaamna karte hain. 🙌"
                     };
                     for (const [key, val] of Object.entries(defaults)) {
                         await setDoc(doc(db, tplPath, key), { message: val, updatedAt: serverTimestamp() });
@@ -324,12 +689,29 @@
         }
 
         function formatMessage(tpl, student) {
-            return tpl.replace(/{name}/g, student.name)
-                      .replace(/{amount}/g, student.feeAmount)
-                      .replace(/{dueDate}/g, `${student.dueDateDay} ${currentMonth}`)
+            if (!tpl) return '';
+            const seatText = student.seatNumber ? `Seat #${student.seatNumber}` : 'N/A';
+            const slotText = student.studySlot || 'Full Day Access (24 Hours)';
+            const nextDueText = student.nextDueDate ? formatDateFriendly(student.nextDueDate) : 'N/A';
+            const upiIdStr = config.upiId || 'example@upi';
+            let msg = tpl.replace(/{name}/g, student.name || '')
+                      .replace(/{amount}/g, student.feeAmount || '')
+                      .replace(/{dueDate}/g, `${student.dueDateDay || ''}th ${currentMonth}`)
                       .replace(/{month}/g, currentMonth)
-                      .replace(/{phone}/g, student.phone)
-                      .replace(/{libraryName}/g, config.libraryName);
+                      .replace(/{phone}/g, student.phone || '')
+                      .replace(/{seat}/g, seatText)
+                      .replace(/{slot}/g, slotText)
+                      .replace(/{nextDueDate}/g, nextDueText)
+                      .replace(/{libraryName}/g, config.libraryName || 'Library')
+                      .replace(/{upiId}/g, upiIdStr);
+            
+            // Custom Flipkart placeholders fallback
+            if (student.invoiceNo) msg = msg.replace(/{invoiceNo}/g, student.invoiceNo);
+            if (student.date) msg = msg.replace(/{date}/g, student.date);
+            if (student.upiId) msg = msg.replace(/{upiId}/g, student.upiId);
+            if (student.duration) msg = msg.replace(/{duration}/g, student.duration);
+
+            return msg;
         }
 
         // --- DASHBOARD ---
@@ -345,6 +727,9 @@
             if ($('pendingCount')) $('pendingCount').innerText = activeStudents.filter(s => s.status === 'Pending').length;
             if ($('dueTodayCount')) $('dueTodayCount').innerText = activeStudents.filter(s => s.status === 'Pending' && s.dueDateDay === todayDay).length;
             
+            const occupiedSeatsNum = students.filter(s => s.seatNumber && (s.admitStatus || 'active') === 'active').length;
+            if ($('occupiedSeatsDisplayDashboard')) $('occupiedSeatsDisplayDashboard').innerText = `${occupiedSeatsNum} / ${config.totalSeats || 18}`;
+
             if ($('dashboardDateDisplay')) $('dashboardDateDisplay').innerText = today.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
             // Action Buckets
@@ -355,6 +740,7 @@
 
         function renderOverdueList() {
             const body = $('overdueListBody');
+            if (!body) return;
             body.innerHTML = '';
             const today = new Date().getDate();
             
@@ -380,7 +766,7 @@
                         </span>
                     </td>
                     <td class="px-4 py-3">
-                        <button onclick="showSection('sendMessage'); $('messagePhone').value='${s.phone}'" class="text-blue-600 hover:font-bold transition-all">Chat →</button>
+                        <button onclick="prefillMessage('${s.id}', '${s.phone}')" class="text-blue-600 hover:font-bold transition-all">Chat →</button>
                     </td>
                 `;
                 body.appendChild(tr);
@@ -389,6 +775,7 @@
 
         function renderUpcomingList() {
             const body = $('upcomingListBody');
+            if (!body) return;
             body.innerHTML = '';
             const today = new Date().getDate();
             
@@ -410,7 +797,7 @@
                     <td class="px-4 py-3 font-medium text-gray-900">${s.name}</td>
                     <td class="px-4 py-3 text-gray-500">${s.dueDateDay}th ${currentMonth}</td>
                     <td class="px-4 py-3">
-                        <button onclick="showSection('sendMessage'); $('messagePhone').value='${s.phone}'" class="text-blue-600 hover:font-bold transition-all">Preview →</button>
+                        <button onclick="prefillMessage('${s.id}', '${s.phone}')" class="text-blue-600 hover:font-bold transition-all">Preview →</button>
                     </td>
                 `;
                 body.appendChild(tr);
@@ -449,7 +836,7 @@
 
         window.sendCancellationNotice = async (id) => {
             const s = students.find(x => x.id === id);
-            const tpl = templates['seatCancelled']?.message || templates['finalWarning']?.message;
+            const tpl = templates['seatCancelled'] || templates['finalWarning'] || "🚫 *SEAT RELEASED* 🚫";
             const msg = formatMessage(tpl, s);
             
             if (confirm(`Send cancellation notice to ${s.name}?`)) {
@@ -478,17 +865,129 @@
             $('formAmount').value = '';
             $('formDueDate').value = '';
             $('formStatus').value = 'Pending';
+            
+            // Dynamically populate available seats list
+            populateSeatDropdown();
+            $('formSeatNumber').value = '';
+            $('formStudySlot').value = 'Full Day (24 Hours)';
+            
             $('modalTitle').innerText = 'Add New Student';
             openModal('studentModal');
         };
 
         // --- STUDENTS MANAGEMENT ---
-        function renderStudents(filter = '') {
+        function populateSeatDropdown() {
+            const select = $('formSeatNumber');
+            if (!select) return;
+            const currentSelected = select.value;
+            select.innerHTML = '<option value="">No Seat Assigned</option>';
+            
+            const total = config.totalSeats || 18;
+            // Find occupied seats
+            const occupied = {};
+            students.forEach(s => {
+                if (s.seatNumber && (s.admitStatus || 'active') === 'active') { // active students block seats
+                    occupied[s.seatNumber] = s.name;
+                }
+            });
+
+            const editId = $('studentId').value;
+            const editingStudent = editId ? students.find(x => x.id === editId) : null;
+            const studentCurrentSeat = editingStudent?.seatNumber || '';
+
+            for (let i = 1; i <= total; i++) {
+                const opt = document.createElement('option');
+                opt.value = i;
+                if (occupied[i]) {
+                    if (Number(studentCurrentSeat) === i) {
+                        opt.innerText = `Seat ${i} (Current)`;
+                        select.appendChild(opt);
+                    } else {
+                        opt.innerText = `Seat ${i} (Occupied by ${occupied[i]})`;
+                        opt.disabled = true;
+                        select.appendChild(opt);
+                    }
+                } else {
+                    opt.innerText = `Seat ${i} (Available)`;
+                    select.appendChild(opt);
+                }
+            }
+            if (studentCurrentSeat) {
+                select.value = studentCurrentSeat;
+            }
+        }
+
+        let studentSearchText = '';
+        let studentStatusFilter = 'all';
+        let studentSeatFilter = 'all';
+
+        window.searchStudents = (val) => {
+            studentSearchText = val || '';
+            renderStudents();
+        };
+
+        window.filterStudentStatus = (val) => {
+            studentStatusFilter = val || 'all';
+            renderStudents();
+        };
+
+        window.filterStudentSeat = (val) => {
+            studentSeatFilter = val || 'all';
+            renderStudents();
+        };
+
+        function populateFilterSeatDropdown() {
+            const select = $('filterSeatSelect');
+            if (!select) return;
+            const currentSelected = select.value || 'all';
+            select.innerHTML = '<option value="all">All Seats / Desks</option><option value="unassigned">Unassigned Only</option>';
+            
+            const total = config.totalSeats || 18;
+            for (let i = 1; i <= total; i++) {
+                const opt = document.createElement('option');
+                opt.value = i;
+                opt.innerText = `Seat #${i}`;
+                select.appendChild(opt);
+            }
+            select.value = currentSelected;
+        }
+
+        function renderStudents() {
             const tbody = $('studentsTableBody');
             if (!tbody) return;
             tbody.innerHTML = '';
             
-            const filtered = students.filter(s => s.name.toLowerCase().includes(filter.toLowerCase()) || s.phone.includes(filter));
+            let filtered = students;
+
+            if (studentSearchText) {
+                const search = studentSearchText.toLowerCase();
+                filtered = filtered.filter(s => 
+                    (s.name && s.name.toLowerCase().includes(search)) || 
+                    (s.phone && s.phone.includes(search))
+                );
+            }
+
+            if (studentStatusFilter !== 'all') {
+                filtered = filtered.filter(s => {
+                    const info = getStatusInfo(s);
+                    if (studentStatusFilter === 'Paid') {
+                        return info.label === 'Paid' || s.status === 'Paid';
+                    } else if (studentStatusFilter === 'Pending') {
+                        return info.label !== 'Paid' && s.status !== 'Paid';
+                    }
+                    return true;
+                });
+            }
+
+            if (studentSeatFilter !== 'all') {
+                filtered = filtered.filter(s => {
+                    if (studentSeatFilter === 'unassigned') {
+                        return !s.seatNumber;
+                    } else {
+                        return s.seatNumber && String(s.seatNumber) === String(studentSeatFilter);
+                    }
+                });
+            }
 
             filtered.forEach(s => {
                 const tr = document.createElement('tr');
@@ -506,6 +1005,9 @@
                     <td class="px-4 py-3">${s.phone}</td>
                     <td class="px-4 py-3">₹${s.feeAmount}</td>
                     <td class="px-4 py-3">${s.dueDateDay}th</td>
+                    <td class="px-4 py-3">
+                        ${s.seatNumber ? `<span class="bg-blue-50 text-blue-700 px-2.5 py-1 rounded-full text-xs font-bold">Seat #${s.seatNumber}</span>` : `<span class="text-gray-400 italic text-xs">Unassigned</span>`}
+                    </td>
                     <td class="px-4 py-3 text-nowrap">
                         <span class="px-2 py-1 rounded-full text-xs font-semibold ${statusInfo.class}">
                             ${statusInfo.label}
@@ -523,13 +1025,360 @@
         function getStatusInfo(s) {
             if (s.admitStatus === 'leave') return { label: 'On Leave', class: 'bg-gray-100 text-gray-500' };
             if (s.admitStatus === 'leaving') return { label: 'Leaving Soon', class: 'bg-red-50 text-red-400' };
-            if (s.status === 'Paid') return { label: 'Paid', class: 'bg-green-100 text-green-700' };
+            
+            const todayStr = new Date().toLocaleDateString('en-CA');
+            const isPaid = s.status === 'Paid' || (s.nextDueDate && todayStr < s.nextDueDate);
+            if (isPaid) return { label: 'Paid', class: 'bg-green-100 text-green-700' };
+            
             const today = new Date().getDate();
             if (s.dueDateDay === today) return { label: 'Due Today', class: 'bg-orange-100 text-orange-700' };
             if (s.dueDateDay < today) return { label: 'Overdue', class: 'bg-red-100 text-red-700 font-bold' };
             if (s.dueDateDay - today <= 2) return { label: 'Due in 2 days', class: 'bg-yellow-100 text-yellow-700' };
             return { label: 'Pending', class: 'bg-blue-50 text-blue-500' };
         }
+
+        // --- WEEKLY SNAPSHOT ENGINE ---
+        async function checkAndCreateWeeklySnapshot() {
+            try {
+                const snapshotCol = collection(db, "snapshots");
+                const querySnap = await getDocs(snapshotCol);
+                const list = [];
+                querySnap.forEach(docSnap => {
+                    const d = docSnap.data();
+                    list.push({ id: docSnap.id, ...d });
+                });
+                
+                // Sort descending
+                list.sort((a, b) => {
+                    const atime = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+                    const btime = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+                    return btime - atime;
+                });
+                
+                const latest = list[0];
+                const oneWeekMs = 7 * 24 * 60 * 60 * 1000;
+                const now = new Date().getTime();
+                
+                let shouldBackup = false;
+                if (!latest) {
+                    shouldBackup = true;
+                } else {
+                    const latestTime = latest.createdAt?.toDate ? latest.createdAt.toDate().getTime() : new Date(latest.dateString || 0).getTime();
+                    if (now - latestTime >= oneWeekMs) {
+                        shouldBackup = true;
+                    }
+                }
+                
+                if (shouldBackup) {
+                    const rawData = {
+                        students: students.map(s => ({
+                            name: s.name || '',
+                            phone: s.phone || '',
+                            feeAmount: s.feeAmount || 0,
+                            dueDateDay: s.dueDateDay || 5,
+                            seatNumber: s.seatNumber || '',
+                            studySlot: s.studySlot || 'Full Day (24 Hours)',
+                            status: s.status || 'Pending',
+                            admitStatus: s.admitStatus || 'active',
+                            muteReminders: s.muteReminders || false,
+                            nextDueDate: s.nextDueDate || ''
+                        })),
+                        payments: payments.map(p => ({
+                            studentId: p.studentId || '',
+                            studentName: p.studentName || '',
+                            amount: p.amount || 0,
+                            monthsPaid: p.monthsPaid || 1,
+                            date: p.date || '',
+                            invoiceNo: p.invoiceNo || '',
+                            phone: p.phone || '',
+                            seat: p.seat || '',
+                            validTill: p.validTill || ''
+                        })),
+                        config: config
+                    };
+                    
+                    const snapshotDoc = {
+                        createdAt: serverTimestamp(),
+                        dateString: new Date().toISOString().substring(0, 10),
+                        studentCount: students.length,
+                        paymentCount: payments.length,
+                        dataJson: JSON.stringify(rawData)
+                    };
+                    
+                    await addDoc(collection(db, "snapshots"), snapshotDoc);
+                    console.log("Weekly snapshot automatically created successfully!");
+                    logActivity(`Weekly Database Snapshot Automated Success (${snapshotDoc.dateString})`);
+                    
+                    if (typeof renderSnapshotBackups === "function") {
+                        renderSnapshotBackups();
+                    }
+                }
+            } catch (err) {
+                console.error("Error checking/creating weekly snapshot:", err);
+            }
+        }
+        window.checkAndCreateWeeklySnapshot = checkAndCreateWeeklySnapshot;
+
+        window.triggerManualSnapshot = async () => {
+            showToast("Creating database snapshot...");
+            try {
+                const rawData = {
+                    students: students.map(s => ({
+                        name: s.name || '',
+                        phone: s.phone || '',
+                        feeAmount: s.feeAmount || 0,
+                        dueDateDay: s.dueDateDay || 5,
+                        seatNumber: s.seatNumber || '',
+                        studySlot: s.studySlot || 'Full Day (24 Hours)',
+                        status: s.status || 'Pending',
+                        admitStatus: s.admitStatus || 'active',
+                        muteReminders: s.muteReminders || false,
+                        nextDueDate: s.nextDueDate || ''
+                    })),
+                    payments: payments.map(p => ({
+                        studentId: p.studentId || '',
+                        studentName: p.studentName || '',
+                        amount: p.amount || 0,
+                        monthsPaid: p.monthsPaid || 1,
+                        date: p.date || '',
+                        invoiceNo: p.invoiceNo || '',
+                        phone: p.phone || '',
+                        seat: p.seat || '',
+                        validTill: p.validTill || ''
+                    })),
+                    config: config
+                };
+                
+                const snapshotDoc = {
+                    createdAt: serverTimestamp(),
+                    dateString: new Date().toISOString().substring(0, 10),
+                    studentCount: students.length,
+                    paymentCount: payments.length,
+                    dataJson: JSON.stringify(rawData)
+                };
+                
+                await addDoc(collection(db, "snapshots"), snapshotDoc);
+                showToast("Manual database snapshot saved!");
+                logActivity(`Manual Database Snapshot Created (${snapshotDoc.dateString})`);
+                await renderSnapshotBackups();
+            } catch (err) {
+                console.error("Manual snapshot failed:", err);
+                showToast("Failed to create snapshot", "error");
+            }
+        };
+
+        async function renderSnapshotBackups() {
+            const body = $('snapshotListBody');
+            if (!body) return;
+            
+            try {
+                const snapshotCol = collection(db, "snapshots");
+                const querySnap = await getDocs(snapshotCol);
+                const list = [];
+                querySnap.forEach(docSnap => {
+                    list.push({ id: docSnap.id, ...docSnap.data() });
+                });
+                
+                list.sort((a, b) => {
+                    const atime = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : 0;
+                    const btime = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : 0;
+                    return btime - atime;
+                });
+                
+                if (list.length === 0) {
+                    body.innerHTML = `
+                        <tr>
+                            <td colspan="4" class="px-3 py-4 text-center text-gray-400 italic">No snapshots available yet.</td>
+                        </tr>
+                    `;
+                    return;
+                }
+                
+                body.innerHTML = '';
+                list.forEach(item => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'border-b hover:bg-gray-50';
+                    
+                    const dateDisplay = item.dateString || 'Unknown';
+                    const sCount = item.studentCount || 0;
+                    const pCount = item.paymentCount || 0;
+                    
+                    tr.innerHTML = `
+                        <td class="px-3 py-2 font-semibold text-gray-700">${dateDisplay}</td>
+                        <td class="px-3 py-2 text-gray-500">${sCount}</td>
+                        <td class="px-3 py-2 text-gray-500">${pCount}</td>
+                        <td class="px-3 py-2 text-right space-x-2">
+                            <button onclick="downloadSnapshot('${item.id}')" class="text-indigo-600 hover:underline font-bold">Download JSON</button>
+                            <span class="text-gray-300">|</span>
+                            <button onclick="restoreSnapshot('${item.id}')" class="text-red-500 hover:underline font-bold">Restore</button>
+                        </td>
+                    `;
+                    body.appendChild(tr);
+                });
+            } catch (err) {
+                console.error("Error loading snapshots list:", err);
+                body.innerHTML = `
+                    <tr>
+                        <td colspan="4" class="px-3 py-2 text-center text-red-500">Failed to render backup list</td>
+                    </tr>
+                `;
+            }
+        }
+        window.renderSnapshotBackups = renderSnapshotBackups;
+
+        window.downloadSnapshot = async (id) => {
+            try {
+                const docRef = doc(db, "snapshots", id);
+                const docSnap = await getDoc(docRef);
+                if (docSnap.exists()) {
+                    const d = docSnap.data();
+                    const text = d.dataJson || '{}';
+                    const blob = new Blob([text], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement("a");
+                    link.setAttribute("href", url);
+                    link.setAttribute("download", `Library_Backup_${d.dateString || id}.json`);
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    showToast("Snapshot downloaded successfully!");
+                } else {
+                    showToast("Snapshot data missing", "error");
+                }
+            } catch (err) {
+                console.error("Download failed:", err);
+                showToast("Download failed", "error");
+            }
+        };
+
+        window.restoreSnapshot = async (id) => {
+            if (!confirm("⚠️ WARNING: Restoring will overwrite all current students and payment histories. Are you sure you want to proceed?")) {
+                return;
+            }
+            
+            showToast("Restoring database from snapshot...");
+            try {
+                const docSnap = await getDoc(doc(db, "snapshots", id));
+                if (!docSnap.exists()) {
+                    showToast("Snapshot document not found", "error");
+                    return;
+                }
+                
+                const d = docSnap.data();
+                const raw = JSON.parse(d.dataJson || '{}');
+                
+                if (!raw.students || !Array.isArray(raw.students)) {
+                    showToast("Invalid snapshot format", "error");
+                    return;
+                }
+                
+                // Clear existing students
+                const studSnap = await getDocs(collection(db, "students"));
+                for (const sDoc of studSnap.docs) {
+                    await deleteDoc(doc(db, "students", sDoc.id));
+                }
+                
+                // Restore students
+                for (const s of raw.students) {
+                    await addDoc(collection(db, "students"), {
+                        name: s.name || '',
+                        phone: s.phone || '',
+                        feeAmount: Number(s.feeAmount) || 0,
+                        dueDateDay: Number(s.dueDateDay) || 5,
+                        seatNumber: s.seatNumber || '',
+                        studySlot: s.studySlot || 'Full Day (24 Hours)',
+                        status: s.status || 'Pending',
+                        admitStatus: s.admitStatus || 'active',
+                        muteReminders: s.muteReminders || false,
+                        nextDueDate: s.nextDueDate || '',
+                        updatedAt: serverTimestamp()
+                    });
+                }
+                
+                // Clear existing payments
+                const paySnap = await getDocs(collection(db, "payments"));
+                for (const pDoc of paySnap.docs) {
+                    await deleteDoc(doc(db, "payments", pDoc.id));
+                }
+                
+                // Restore payments
+                if (raw.payments && Array.isArray(raw.payments)) {
+                    for (const p of raw.payments) {
+                        await addDoc(collection(db, "payments"), {
+                            studentId: p.studentId || '',
+                            studentName: p.studentName || '',
+                            amount: Number(p.amount) || 0,
+                            monthsPaid: Number(p.monthsPaid) || 1,
+                            date: p.date || '',
+                            invoiceNo: p.invoiceNo || '',
+                            phone: p.phone || '',
+                            seat: p.seat || '',
+                            validTill: p.validTill || '',
+                            updatedAt: serverTimestamp()
+                        });
+                    }
+                }
+                
+                // Restore settings/config
+                if (raw.config) {
+                    await setDoc(doc(db, "settings", "global"), raw.config);
+                    config = raw.config;
+                    updateBranding();
+                    renderSettings();
+                }
+                
+                showToast("Database successfully restored!");
+                logActivity(`Database Restored to snapshot date ${d.dateString}`);
+                
+                renderSeats();
+                renderFeeHistory();
+            } catch (err) {
+                console.error("Restore failed:", err);
+                showToast("Restore failed: " + err.message, "error");
+            }
+        };
+
+        // --- EXPORT DATABASE TO CSV ---
+        window.exportStudentsCSV = () => {
+            if (students.length === 0) {
+                showToast("No students to export!", "error");
+                return;
+            }
+            
+            const headers = ['Name', 'Phone', 'Fee Amount', 'Due Day', 'Seat Number', 'Study Slot/Timings', 'Status', 'Membership Status'];
+            const csvRows = [headers.join(',')];
+            
+            students.forEach(s => {
+                const row = [
+                    s.name || '',
+                    s.phone || '',
+                    s.feeAmount || '',
+                    s.dueDateDay || '',
+                    s.seatNumber ? `#${s.seatNumber}` : 'Unassigned',
+                    s.studySlot || 'Full Day (24 Hours)',
+                    s.status || 'Pending',
+                    s.admitStatus || 'active'
+                ];
+                
+                const cleanRow = row.map(val => {
+                    let text = String(val).replace(/"/g, '""');
+                    return `"${text}"`;
+                });
+                
+                csvRows.push(cleanRow.join(','));
+            });
+            
+            const csvString = csvRows.join('\n');
+            const blob = new Blob([csvString], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.setAttribute("href", url);
+            link.setAttribute("download", `Students_Database_Backup_${new Date().toISOString().substring(0, 10)}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            showToast("CSV file exported successfully!");
+        };
 
         window.submitStudentForm = async (e) => {
             e.preventDefault();
@@ -538,6 +1387,7 @@
             btn.innerText = 'Saving...';
 
             const id = $('studentId').value;
+            const selectedSeat = $('formSeatNumber').value || '';
             const data = {
                 name: $('formName').value,
                 phone: $('formPhone').value,
@@ -545,19 +1395,39 @@
                 dueDateDay: Number($('formDueDate').value),
                 status: $('formStatus').value,
                 admitStatus: $('formAdmitStatus').value,
+                seatNumber: selectedSeat,
+                studySlot: $('formStudySlot').value || 'Full Day (24 Hours)',
                 muteReminders: $('formMute').checked,
                 updatedAt: serverTimestamp()
             };
 
             try {
+                if (selectedSeat) {
+                    // Anyone else with this seat should be vacated
+                    const duplicateOccupant = students.find(x => x.seatNumber == selectedSeat && x.id !== id && (x.admitStatus || 'active') === 'active');
+                    if (duplicateOccupant) {
+                        try {
+                            await updateDoc(doc(db, "students", duplicateOccupant.id), {
+                                seatNumber: '',
+                                updatedAt: serverTimestamp()
+                            });
+                        } catch (e) {
+                            console.warn("Failed to vacant duplicate seat:", duplicateOccupant.name);
+                        }
+                    }
+                }
+
                 if (id) {
                     await updateDoc(doc(db, "students", id), data);
                     showToast('Student updated!');
                 } else {
                     data.createdAt = serverTimestamp();
                     data.lastReminderSent = '';
-                    await addDoc(collection(db, "students"), data);
+                    const docRef = await addDoc(collection(db, "students"), data);
                     showToast('Student added!');
+                    
+                    // Trigger Welcome Message Queue after 10 seconds!
+                    triggerWelcomeAdmissionMessage(docRef.id, data);
                 }
                 closeModal('studentModal');
             } catch (err) {
@@ -567,6 +1437,26 @@
                 btn.innerText = 'Save Student';
             }
         };
+
+        function triggerWelcomeAdmissionMessage(studentId, s) {
+            const tpl = templates['welcome'] || "🎉 *ADMISSION CONFIRMED!* 🎉\n🔔 *{libraryName}*\n----------------------------------------\n*Namaste {name} ji,*\n\nAapka admission *{libraryName}* me safaltapoorvak ho gaya hai! \n\n🪑 *Assigned Seat Desk:* {seat}\n📅 *Study Slot / Shift:* {slot}\n\n📚 Aapka study slot aur seat desk allocate kar diya gaya hai.\n\n👥 *Join Our WhatsApp Group For Daily Updates:*\n👉 {groupLink}\n\n🌐 *Visit Our Student Portal / Website:*\n👉 https://hariharpur-library.vercel.app/\n----------------------------------------\nDhanyavaad! Hum aapki safe aur peaceful self-study journey ki kaamna karte hain. 🙌";
+            
+            const groupLink = config.whatsappGroupLink || "https://chat.whatsapp.com/example";
+            const seatText = s.seatNumber ? `Desk #${s.seatNumber}` : 'Unassigned';
+            const slotText = s.studySlot || 'Full Day Access (24 Hours)';
+            const welcomeMsg = tpl.replace(/{name}/g, s.name || '')
+                                  .replace(/{phone}/g, s.phone || '')
+                                  .replace(/{seat}/g, seatText)
+                                  .replace(/{slot}/g, slotText)
+                                  .replace(/{libraryName}/g, config.libraryName || 'Aaradhya Library')
+                                  .replace(/{groupLink}/g, groupLink);
+            
+            sendWhatsApp(s.phone, welcomeMsg, {
+                isWelcome: true, // triggers 10 second delay
+                studentName: s.name,
+                type: 'Welcome Admission'
+            });
+        }
 
         window.editStudent = (id) => {
             const s = students.find(x => x.id === id);
@@ -578,6 +1468,12 @@
             $('formStatus').value = s.status || 'Pending';
             $('formAdmitStatus').value = s.admitStatus || 'active';
             $('formMute').checked = s.muteReminders || false;
+            
+            // Populate dropdown before setting the value
+            populateSeatDropdown();
+            $('formSeatNumber').value = s.seatNumber || '';
+            $('formStudySlot').value = s.studySlot || 'Full Day (24 Hours)';
+            
             $('modalTitle').innerText = 'Edit Student';
             openModal('studentModal');
         };
@@ -754,18 +1650,23 @@
             
             students.forEach(s => {
                 const tr = document.createElement('tr');
-                tr.className = 'border-b';
+                tr.className = 'border-b hover:bg-gray-50 transition-colors';
                 tr.innerHTML = `
-                    <td class="px-4 py-3">${s.name}</td>
-                    <td class="px-4 py-3">₹${s.feeAmount}</td>
-                    <td class="px-4 py-3">${s.dueDateDay}th</td>
+                    <td class="px-4 py-3 font-semibold text-gray-800">${s.name}</td>
+                    <td class="px-4 py-3 text-gray-700">₹${s.feeAmount}</td>
+                    <td class="px-4 py-3 text-gray-600">${s.dueDateDay}th</td>
                     <td class="px-4 py-3">
                          <span class="px-2 py-1 rounded-full text-xs font-semibold ${s.status === 'Paid' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">
                             ${s.status}
                         </span>
                     </td>
                     <td class="px-4 py-3">
-                        ${s.status === 'Pending' ? `<button onclick="markFeePaid('${s.id}')" class="bg-green-600 text-white px-3 py-1 rounded text-xs">Mark Paid & Invoice</button>` : `<span class="text-xs text-gray-400">Paid on ${s.lastPaidDate || 'N/A'}</span>`}
+                        <div class="flex items-center gap-2">
+                            ${s.status === 'Pending' ? `<button onclick="markFeePaid('${s.id}')" class="bg-green-600 hover:bg-green-700 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition duration-200">Mark Paid & Invoice</button>` : `<span class="text-xs text-gray-500 bg-gray-100 px-2.5 py-1.5 rounded-lg font-medium">Paid on ${s.lastPaidDate || 'N/A'}</span>`}
+                            
+                            <button onclick="editStudent('${s.id}')" title="Edit Student" class="bg-blue-50 text-blue-600 hover:bg-blue-100 font-bold px-2.5 py-1.5 rounded-lg text-xs transition-colors">Edit</button>
+                            <button onclick="deleteStudent('${s.id}')" title="Delete Student" class="bg-red-50 text-red-600 hover:bg-red-100 font-bold px-2.5 py-1.5 rounded-lg text-xs transition-colors">Delete</button>
+                        </div>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -788,15 +1689,25 @@
                     const now = new Date();
                     const dateStr = now.toLocaleDateString();
 
+                    // Calculate next payment due date precisely
+                    const baseDate = new Date();
+                    const dueDay = s.dueDateDay || baseDate.getDate();
+                    let nextDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + months, dueDay);
+                    if (nextDate.getDate() !== dueDay) {
+                        nextDate = new Date(baseDate.getFullYear(), baseDate.getMonth() + months + 1, 0);
+                    }
+                    const nextDueDateStr = nextDate.toLocaleDateString('en-CA');
+
                     // Update Student
                     await updateDoc(doc(db, "students", id), {
                         status: 'Paid',
                         lastPaidDate: dateStr,
+                        nextDueDate: nextDueDateStr,
                         updatedAt: serverTimestamp()
                     });
 
                     // Log Payment
-                    await addDoc(collection(db, "payments"), {
+                    const payDocRef = await addDoc(collection(db, "payments"), {
                         studentId: id,
                         studentName: s.name,
                         amount: s.feeAmount * months,
@@ -805,14 +1716,12 @@
                         paidAt: serverTimestamp()
                     });
 
-                    // Send Invoice
-                    const tpl = templates['invoice'];
-                    const msg = formatMessage(tpl, { ...s, feeAmount: s.feeAmount * months });
-                    await sendWhatsApp(s.phone, msg);
-
-                    showToast(`Paid for ${months} months! Invoice sent.`);
+                    showToast(`Paid for ${months} months! Invoice ready.`);
                     logActivity(`Fee received from ${s.name} (${months} months)`);
                     closeModal('paymentModal');
+
+                    // Auto-pop the Flipkart-style invoice receipt
+                    viewInvoiceReceipt(payDocRef.id);
                 } catch (err) {
                     handleFirestoreError(err, OperationType.WRITE, "payments");
                 } finally {
@@ -898,11 +1807,16 @@
                     <td class="px-6 py-4 font-medium text-gray-900">${p.studentName}</td>
                     <td class="px-6 py-4 text-green-600 font-bold">₹${amt}</td>
                     <td class="px-6 py-4 text-gray-500">${dateDisplay}</td>
-                    <td class="px-6 py-4">
+                    <td class="px-6 py-4 text-center">
                         <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                             <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
                             Success
                         </span>
+                    </td>
+                    <td class="px-6 py-4 flex gap-1.5 justify-center">
+                        <button onclick="viewInvoiceReceipt('${p.id}')" class="bg-blue-50 text-blue-600 hover:bg-blue-100 font-bold px-3 py-1 rounded-sm text-xs transition-colors">Receipt</button>
+                        <button onclick="editPaymentRecord('${p.id}')" class="bg-gray-50 text-gray-600 hover:bg-gray-100 px-3 py-1 rounded-sm text-xs transition-colors">Edit</button>
+                        <button onclick="deletePaymentRecord('${p.id}')" class="bg-red-50 text-red-600 hover:bg-red-100 px-3 py-1 rounded-sm text-xs transition-colors">Delete</button>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -924,12 +1838,24 @@
                 }
             });
             document.title = `${config.libraryName} Management`;
+            if (typeof populateFilterSeatDropdown === "function") {
+                populateFilterSeatDropdown();
+            }
         }
 
         function renderSettings() {
-            $('settingLibraryName').value = config.libraryName || '';
-            $('settingUPI').value = config.upiId || '';
-            $('settingDefaultFee').value = config.defaultFee || 500;
+            const libNameEl = $('settingLibraryName');
+            const upiEl = $('settingUPI');
+            const feeEl = $('settingDefaultFee');
+            const seatsEl = $('settingTotalSeats');
+            const reminderTimeEl = $('settingReminderTime');
+            const groupLinkEl = $('settingGroupLink');
+            if (libNameEl) libNameEl.value = config.libraryName || '';
+            if (upiEl) upiEl.value = config.upiId || '';
+            if (feeEl) feeEl.value = config.defaultFee || 500;
+            if (seatsEl) seatsEl.value = config.totalSeats || 18;
+            if (reminderTimeEl) reminderTimeEl.value = config.reminderTime || '10:00';
+            if (groupLinkEl) groupLinkEl.value = config.whatsappGroupLink || '';
         }
 
         window.saveSettings = async () => {
@@ -940,7 +1866,10 @@
             const newConfig = {
                 libraryName: $('settingLibraryName').value,
                 upiId: $('settingUPI').value,
-                defaultFee: Number($('settingDefaultFee').value)
+                defaultFee: Number($('settingDefaultFee').value),
+                totalSeats: Number($('settingTotalSeats').value || 18),
+                reminderTime: $('settingReminderTime').value || '10:00',
+                whatsappGroupLink: $('settingGroupLink').value || ''
             };
 
             try {
@@ -953,6 +1882,362 @@
             } finally {
                 btn.disabled = false;
                 btn.innerText = 'Save Settings';
+            }
+        };
+
+        // --- PRINTING UTILITY (No window.open) ---
+        window.printInvoice = () => {
+            window.print();
+        };
+
+        // --- FORMAT DATES FRIENDLY ---
+        function formatDateFriendly(dateStr) {
+            if (!dateStr) return 'N/A';
+            try {
+                const parts = dateStr.split('-');
+                if (parts.length === 3) {
+                    // YYYY-MM-DD
+                    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+                    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+                }
+                const d = new Date(dateStr);
+                if (!isNaN(d.getTime())) {
+                    return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+                }
+                return dateStr;
+            } catch(e) {
+                return dateStr;
+            }
+        }
+
+        // --- VIEW FLIPKART STYLE INVOICE ---
+        window.viewInvoiceReceipt = (paymentId) => {
+            const p = payments.find(x => x.id === paymentId);
+            if (!p) return showToast('Payment record not found', 'error');
+            
+            const student = students.find(x => x.id === p.studentId) || { seatNumber: 'N/A', phone: 'N/A' };
+            
+            // Format dynamic receipt card
+            const brandEl = $('invoiceBrand');
+            if (brandEl) brandEl.innerText = config.libraryName ? config.libraryName.toUpperCase() : 'AARADHYA LIBRARY';
+            
+            const upiEl = $('invoiceUPIInfo');
+            if (upiEl) upiEl.innerText = `UPI ID: ${config.upiId || 'example@upi'}`;
+            
+            const invNumEl = $('invoiceNumber');
+            if (invNumEl) invNumEl.innerText = `Invoice No: INV-${p.id.substring(0,8).toUpperCase()}`;
+            
+            const dateDisplay = p.paidAt ? p.paidAt.toDate().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : p.paidDate;
+            const invDateEl = $('invoiceDate');
+            if (invDateEl) invDateEl.innerText = `Date: ${dateDisplay}`;
+            
+            const libNameEl = $('invoiceLibraryName');
+            if (libNameEl) libNameEl.innerText = config.libraryName || 'Aaradhya Library';
+            
+            const studNameEl = $('invoiceStudentName');
+            if (studNameEl) studNameEl.innerText = p.studentName || 'Student';
+            
+            const phoneEl = $('invoiceStudentPhone');
+            if (phoneEl) phoneEl.innerText = `Phone: ${student.phone || 'N/A'}`;
+            
+            const seatEl = $('invoiceStudentSeat');
+            if (seatEl) seatEl.innerText = `Assigned Desk: Seat #${student.seatNumber || 'None'}`;
+            
+            const tableSeatEl = $('invoiceTableSeat');
+            if (tableSeatEl) tableSeatEl.innerText = student.seatNumber ? `#${student.seatNumber}` : 'N/A';
+            
+            const tablePeriodEl = $('invoiceTablePeriod');
+            if (tablePeriodEl) tablePeriodEl.innerText = `${p.months || 1} Month(s)`;
+            
+            const tableAmountEl = $('invoiceTableAmount');
+            if (tableAmountEl) tableAmountEl.innerText = `₹${p.amount}.00`;
+            
+            // Validity periods
+            let validityText = 'N/A';
+            if (student.nextDueDate) {
+                validityText = `Valid Till: ${formatDateFriendly(student.nextDueDate)}`;
+            } else {
+                const base = p.paidAt ? p.paidAt.toDate() : new Date();
+                base.setMonth(base.getMonth() + (p.months || 1));
+                validityText = `Valid Till: ${base.toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}`;
+            }
+            const validityEl = $('invoiceValidityDisplay');
+            if (validityEl) validityEl.innerText = validityText;
+            
+            const subtotalEl = $('invoiceSubtotal');
+            if (subtotalEl) subtotalEl.innerText = `₹${p.amount || 0}.05`.replace('.05', '.00');
+            
+            const totalEl = $('invoiceTotal');
+            if (totalEl) totalEl.innerText = `₹${p.amount || 0}.00`;
+            
+            // WhatsApp bill action
+            const sendBtn = $('invoiceSendWABtn');
+            if (sendBtn) {
+                sendBtn.innerText = '💬 WhatsApp Bill';
+                sendBtn.onclick = async () => {
+                    sendBtn.disabled = true;
+                    sendBtn.innerText = 'Sending...';
+                    
+                    const invoiceNo = `INV-${p.id.substring(0,8).toUpperCase()}`;
+                    const paidDateStr = p.paidAt ? p.paidAt.toDate().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : (p.paidDate || new Date().toLocaleDateString('en-IN'));
+                    const upiIdStr = config.upiId || 'example@upi';
+                    const durationStr = `${p.months || 1}`;
+                    const validTillStr = student.nextDueDate ? formatDateFriendly(student.nextDueDate) : 'N/A';
+
+                    let tpl = templates['invoice'];
+                    const oldPlainTpl = "Namaste {name} ji, Aapki ₹{amount} fee successully jama ho gayi hai. Thank you! - {libraryName}";
+                    if (!tpl || tpl === oldPlainTpl) {
+                        tpl = "🧾 *TAX INVOICE / RECEIPT*\n🔔 *{libraryName}*\n----------------------------------------\n*Namaste {name} ji,*\nAapki *₹{amount}* fee *{duration} Month(s)* ke liye safaltapoorvak jama ho gayi hai.\nDhanyavaad! 🙏\n----------------------------------------\n*INVOICE DETAILS:*\n*Invoice No:* {invoiceNo}\n*Date:* {date}\n*UPI ID:* {upiId}\n----------------------------------------\n*MEMBER & DESK:*\n*Student:* {name}\n*Phone:* {phone}\n*Assigned Desk:* {seat}\n----------------------------------------\n*FEES SUMMARY:*\n*Study Slot:* Full-Day Access\n*Seat Desk:* {seat}\n*Duration:* {duration} Month(s)\n*Net Price:* *₹{amount}.00*\n*Payment Status:* *COMPLETED ✅*\n----------------------------------------\n📅 *VALIDITY PERIOD:*\n*Valid Till:* *{nextDueDate}*\n----------------------------------------\n*Visit Our Website:*\n➡️ https://hariharpur-library.vercel.app/\n----------------------------------------\n_Digital Receipt Generated Successfully!_";
+                    }
+
+                    const payloadStudent = {
+                        ...student,
+                        name: p.studentName || student.name || 'Student',
+                        feeAmount: p.amount,
+                        invoiceNo: invoiceNo,
+                        date: paidDateStr,
+                        upiId: upiIdStr,
+                        duration: durationStr,
+                        nextDueDate: validTillStr,
+                        libraryName: config.libraryName || 'Aaradhya Library'
+                    };
+
+                    const msg = formatMessage(tpl, payloadStudent);
+                    const ok = await sendWhatsApp(student.phone, msg, {
+                        sendPDF: 'true',
+                        invoiceNo: invoiceNo,
+                        studentName: payloadStudent.name,
+                        date: paidDateStr,
+                        amount: payloadStudent.feeAmount,
+                        duration: durationStr,
+                        seat: student.seatNumber ? `Desk #${student.seatNumber}` : 'Unassigned',
+                        validTill: validTillStr,
+                        libraryName: config.libraryName || 'Aaradhya Digital Library',
+                        type: 'Flipkart-Style Invoice/Bill'
+                    });
+                    sendBtn.disabled = false;
+                    sendBtn.innerText = '💬 WhatsApp Bill';
+                    if (ok) closeModal('invoiceModal');
+                };
+            }
+            
+            openModal('invoiceModal');
+        };
+
+        // --- PAYMENT EDIT AND DELETE ---
+        window.editPaymentRecord = (id) => {
+            const p = payments.find(x => x.id === id);
+            if (!p) return showToast('Record not found', 'error');
+            
+            $('editPaymentId').value = p.id;
+            $('editPaymentStudentName').value = p.studentName || '';
+            $('editPaymentAmount').value = p.amount || 0;
+            $('editPaymentMonths').value = p.months || 1;
+            $('editPaymentDate').value = p.paidDate || new Date().toLocaleDateString();
+            
+            openModal('paymentEditModal');
+        };
+
+        window.submitPaymentEditForm = async (e) => {
+            e.preventDefault();
+            const id = $('editPaymentId').value;
+            const btn = $('savePaymentEditBtn');
+            btn.disabled = true;
+            btn.innerText = 'Saving...';
+            
+            try {
+                await updateDoc(doc(db, "payments", id), {
+                    amount: Number($('editPaymentAmount').value),
+                    months: Number($('editPaymentMonths').value),
+                    paidDate: $('editPaymentDate').value,
+                    updatedAt: serverTimestamp()
+                });
+                
+                showToast('Payment history updated successfully!');
+                closeModal('paymentEditModal');
+            } catch (err) {
+                handleFirestoreError(err, OperationType.UPDATE, "payments");
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Save Changes';
+            }
+        };
+
+        window.deletePaymentRecord = async (id) => {
+            if (confirm('Are you sure you want to delete this payment record? This action is permanent.')) {
+                try {
+                    await deleteDoc(doc(db, "payments", id));
+                    showToast('Payment history deleted!');
+                } catch (err) {
+                    handleFirestoreError(err, OperationType.DELETE, "payments");
+                }
+            }
+        };
+
+        // --- SEAT MANAGEMENT SECTION ---
+        function renderSeats() {
+            const grid = $('seatsGrid');
+            if (!grid) return;
+            grid.innerHTML = '';
+            
+            const total = config.totalSeats || 18;
+            
+            // Map students to occupied seats
+            const occupiedMap = {};
+            students.forEach(s => {
+                if (s.seatNumber && (s.admitStatus || 'active') === 'active') {
+                    occupiedMap[s.seatNumber] = s;
+                }
+            });
+            
+            let occupiedCount = 0;
+            
+            for (let i = 1; i <= total; i++) {
+                const s = occupiedMap[i];
+                const card = document.createElement('div');
+                
+                if (s) {
+                    occupiedCount++;
+                    const statusClass = s.status === 'Paid' ? 'bg-green-500' : 'bg-red-500';
+                    const diffTodayStr = s.nextDueDate ? formatDateFriendly(s.nextDueDate) : 'N/A';
+                    
+                    card.className = "bg-white p-4 sm:p-5 rounded-xl sm:rounded-2xl border border-gray-100 shadow-sm flex flex-col justify-between hover:shadow-md transition-all duration-300 relative";
+                    card.innerHTML = `
+                        <div>
+                            <span class="absolute top-3 right-3 text-[10px] font-bold text-gray-400">Seat #${i}</span>
+                            <div class="flex items-center gap-2 mb-3">
+                                <span class="w-2.5 h-2.5 rounded-full ${statusClass}"></span>
+                                <p class="font-bold text-gray-800 text-sm whitespace-nowrap overflow-hidden text-ellipsis max-w-[110px] sm:max-w-[140px]" title="${s.name}">${s.name}</p>
+                            </div>
+                            <div class="space-y-1 text-xs text-gray-500">
+                                <p>📱 ${s.phone.replace('91', '')}</p>
+                                <p>📅 Due: ${diffTodayStr}</p>
+                                <p class="font-semibold text-gray-700">Amt: ₹${s.feeAmount}</p>
+                            </div>
+                        </div>
+                        <div class="flex gap-1 border-t pt-3 mt-4">
+                            <button onclick="prefillMessage('${s.id}', '${s.phone}')" class="flex-1 bg-green-50 hover:bg-green-100 text-green-700 text-xs py-1.5 rounded-xl font-bold transition-colors">Chat</button>
+                            <button onclick="openSeatAssignModal(${i})" class="flex-1 bg-gray-50 hover:bg-gray-100 text-gray-650 text-xs py-1.5 rounded-xl font-bold transition-all">Move</button>
+                        </div>
+                    `;
+                } else {
+                    card.className = "border-2 border-dashed border-gray-200 hover:bg-gray-50 p-4 sm:p-5 rounded-xl sm:rounded-2xl flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[140px]";
+                    card.setAttribute('onclick', `openSeatAssignModal(${i})`);
+                    card.innerHTML = `
+                        <span class="text-xs font-bold text-gray-400 mb-2">Seat #${i}</span>
+                        <div class="w-8 h-8 rounded-full border border-dashed border-gray-300 flex items-center justify-center text-gray-400 font-bold mb-1">+</div>
+                        <span class="text-[10px] font-semibold text-gray-400">Available</span>
+                    `;
+                }
+                grid.appendChild(card);
+            }
+            
+            const countDisplay = $('occupiedSeatsDisplay');
+            if (countDisplay) {
+                countDisplay.innerText = `${occupiedCount} / ${total} Seats Occupied`;
+            }
+        }
+
+        window.openSeatAssignModal = (seatNum) => {
+            $('assignSeatNumber').value = seatNum;
+            $('seatAssignTitle').innerText = `Manage Seat #${seatNum}`;
+            
+            const select = $('assignStudentSelect');
+            select.innerHTML = '<option value="">Select Student</option>';
+            
+            const occupant = students.find(s => s.seatNumber == seatNum && (s.admitStatus || 'active') === 'active');
+            
+            students.forEach(s => {
+                if ((s.admitStatus || 'active') === 'active') {
+                    const option = document.createElement('option');
+                    option.value = s.id;
+                    if (s.seatNumber) {
+                        option.innerText = `${s.name} (Seat #${s.seatNumber})`;
+                    } else {
+                        option.innerText = `${s.name} (No seat)`;
+                    }
+                    select.appendChild(option);
+                }
+            });
+            
+            const infoBox = $('currentSeatOccupantInfo');
+            if (occupant) {
+                infoBox.classList.remove('hidden');
+                $('occupantName').innerText = `${occupant.name} (${occupant.phone})`;
+                select.value = occupant.id;
+            } else {
+                infoBox.classList.add('hidden');
+                select.value = '';
+            }
+            
+            openModal('seatAssignModal');
+        };
+
+        window.vacateSeatDirectly = async () => {
+            const seatNum = $('assignSeatNumber').value;
+            const occupant = students.find(s => s.seatNumber == seatNum && (s.admitStatus || 'active') === 'active');
+            if (!occupant) return;
+            
+            if (confirm(`Vacate Seat #${seatNum} from ${occupant.name}?`)) {
+                try {
+                    await updateDoc(doc(db, "students", occupant.id), {
+                        seatNumber: '',
+                        updatedAt: serverTimestamp()
+                    });
+                    showToast(`Seat #${seatNum} vacated!`);
+                    closeModal('seatAssignModal');
+                    renderSeats();
+                } catch (err) {
+                    handleFirestoreError(err, OperationType.UPDATE, "students");
+                }
+            }
+        };
+
+        window.submitSeatAssignment = async () => {
+            const seatNum = $('assignSeatNumber').value;
+            const studentId = $('assignStudentSelect').value;
+            
+            try {
+                // Find existing student at this seat, if any, and vacate them
+                const existingOccupant = students.find(s => s.seatNumber == seatNum && (s.admitStatus || 'active') === 'active');
+                if (existingOccupant && existingOccupant.id !== studentId) {
+                    await updateDoc(doc(db, "students", existingOccupant.id), {
+                        seatNumber: '',
+                        updatedAt: serverTimestamp()
+                    });
+                }
+                
+                if (studentId) {
+                    // Update target student's seat
+                    const targetStudent = students.find(s => s.id === studentId);
+                    await updateDoc(doc(db, "students", studentId), {
+                        seatNumber: String(seatNum),
+                        updatedAt: serverTimestamp()
+                    });
+                    showToast(`Seat #${seatNum} assigned to ${targetStudent.name}!`);
+                } else {
+                    showToast('Seat vacated.');
+                }
+                closeModal('seatAssignModal');
+                renderSeats();
+            } catch (err) {
+                handleFirestoreError(err, OperationType.UPDATE, "students");
+            }
+        };
+
+        // --- TRIGGER AUTOMATED SCANNER MANUALLY ---
+        window.triggerRemindersScanner = async () => {
+            const btn = $('triggerScannerBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerText = 'Scanning...';
+            }
+            showToast('Scanning library ledger and firing due messages...', 'success');
+            await checkReminders();
+            showToast('Ledger scan complete!', 'success');
+            if (btn) {
+                btn.disabled = false;
+                btn.innerText = 'Run Reminders Engine';
             }
         };
 
@@ -992,6 +2277,7 @@
                     <li><a id="nav-desktop-broadcast" onclick="showSection('broadcast')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">📢 Broadcast</a></li>
                     <li><a id="nav-desktop-templates" onclick="showSection('templates')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">📝 Templates</a></li>
                     <li><a id="nav-desktop-feeManagement" onclick="showSection('feeManagement')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">💰 Fee Management</a></li>
+                    <li><a id="nav-desktop-seats" onclick="showSection('seats')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">🪑 Seat Map</a></li>
                     <li><a id="nav-desktop-feeHistory" onclick="showSection('feeHistory')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">📜 Fee History</a></li>
                     <li><a id="nav-desktop-settings" onclick="showSection('settings')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">⚙️ Settings</a></li>
                 </ul>
@@ -1021,6 +2307,7 @@
                     <a id="nav-mobile-templates" onclick="showSection('templates')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">📝 Templates</a>
                     <a id="nav-mobile-broadcast" onclick="showSection('broadcast')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">📢 All</a>
                     <a id="nav-mobile-feeManagement" onclick="showSection('feeManagement')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">💰 Fees</a>
+                    <a id="nav-mobile-seats" onclick="showSection('seats')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">🪑 Seats</a>
                     <a id="nav-mobile-feeHistory" onclick="showSection('feeHistory')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">📜 History</a>
                     <a id="nav-mobile-settings" onclick="showSection('settings')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">⚙️ Config</a>
                 </nav>
@@ -1034,29 +2321,29 @@
                     </div>
                 </header>
 
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between">
-                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2 block">Total Students</span>
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div onclick="showSection('students')" class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 cursor-pointer hover:border-green-300 hover:shadow transition-all flex flex-col justify-between">
+                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2 block">📋 Total Students</span>
                         <div class="flex items-baseline gap-2">
-                            <span id="totalStudents" class="text-2xl md:text-4xl font-bold text-gray-900">0</span>
+                            <span id="totalStudents" class="text-2xl md:text-3xl font-bold text-gray-900">0</span>
+                        </div>
+                    </div>
+                    <div onclick="showSection('seats')" class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 cursor-pointer hover:border-blue-300 hover:shadow transition-all flex flex-col justify-between">
+                        <span class="text-xs font-bold text-blue-400 uppercase tracking-widest mb-2 block">🪑 Occupied Seats</span>
+                        <div class="flex items-baseline gap-2">
+                            <span id="occupiedSeatsDisplayDashboard" class="text-2xl md:text-3xl font-bold text-blue-600">0 / 18</span>
                         </div>
                     </div>
                     <div class="bg-white p-6 rounded-2xl shadow-sm border border-green-50 flex flex-col justify-between">
-                        <span class="text-xs font-bold text-green-400 uppercase tracking-widest mb-2 block">Paid</span>
+                        <span class="text-xs font-bold text-green-400 uppercase tracking-widest mb-2 block">✅ Paid</span>
                         <div class="flex items-baseline gap-2">
-                            <span id="paidCount" class="text-2xl md:text-4xl font-bold text-green-600">0</span>
+                            <span id="paidCount" class="text-2xl md:text-3xl font-bold text-green-600">0</span>
                         </div>
                     </div>
-                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-red-50 flex flex-col justify-between">
-                        <span class="text-xs font-bold text-red-400 uppercase tracking-widest mb-2 block">Pending</span>
+                    <div onclick="showSection('feeManagement')" class="bg-white p-6 rounded-2xl shadow-sm border border-red-50 cursor-pointer hover:border-red-300 hover:shadow transition-all flex flex-col justify-between">
+                        <span class="text-xs font-bold text-red-500 uppercase tracking-widest mb-2 block">🚨 Pending Accounts</span>
                         <div class="flex items-baseline gap-2">
-                            <span id="pendingCount" class="text-2xl md:text-4xl font-bold text-red-500">0</span>
-                        </div>
-                    </div>
-                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-orange-50 flex flex-col justify-between">
-                        <span class="text-xs font-bold text-orange-400 uppercase tracking-widest mb-2 block">Due Today</span>
-                        <div class="flex items-baseline gap-2">
-                            <span id="dueTodayCount" class="text-2xl md:text-4xl font-bold text-orange-500">0</span>
+                            <span id="pendingCount" class="text-2xl md:text-3xl font-bold text-red-500">0</span>
                         </div>
                     </div>
                 </div>
@@ -1138,8 +2425,31 @@
                 </header>
 
                 <div class="bg-white rounded-xl shadow-sm border mb-8">
-                    <div class="p-4 border-b">
-                        <input type="text" oninput="searchStudents(this.value)" placeholder="Search students..." class="w-full md:w-80 p-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-sm">
+                    <div class="p-4 border-b flex flex-col lg:flex-row gap-4 items-center justify-between">
+                        <div class="flex flex-col sm:flex-row gap-3 w-full lg:w-auto items-stretch sm:items-center">
+                            <!-- Search box -->
+                            <div class="relative flex-1 sm:w-64">
+                                <span class="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none text-gray-400">🔍</span>
+                                <input id="studentSearchInput" type="text" oninput="searchStudents(this.value)" placeholder="Search Name or Phone..." class="w-full pl-9 pr-3 py-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-sm bg-gray-50/50 hover:bg-white focus:bg-white transition-all">
+                            </div>
+                            <!-- Status filter -->
+                            <select id="filterStatusSelect" onchange="filterStudentStatus(this.value)" class="py-2.5 px-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-sm bg-white hover:bg-gray-50 transition-all cursor-pointer">
+                                <option value="all">All Statuses</option>
+                                <option value="Paid">Paid Only</option>
+                                <option value="Pending">Pending Only</option>
+                            </select>
+                            <!-- Seat filter -->
+                            <select id="filterSeatSelect" onchange="filterStudentSeat(this.value)" class="py-2.5 px-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-sm bg-white hover:bg-gray-50 transition-all cursor-pointer">
+                                <option value="all">All Seats / Desks</option>
+                                <option value="unassigned">Unassigned Only</option>
+                            </select>
+                        </div>
+                        <!-- Actions button grid -->
+                        <div class="w-full lg:w-auto text-right">
+                            <button onclick="exportStudentsCSV()" class="w-full lg:w-auto flex items-center justify-center gap-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-sm">
+                                📥 Export CSV
+                            </button>
+                        </div>
                     </div>
                     <div class="overflow-x-auto min-w-full">
                         <table class="w-full text-left whitespace-nowrap">
@@ -1149,6 +2459,7 @@
                                     <th class="px-4 py-3">Phone</th>
                                     <th class="px-4 py-3">Fee Amount</th>
                                     <th class="px-4 py-3">Due Date</th>
+                                    <th class="px-4 py-3">Seat</th>
                                     <th class="px-4 py-3">Status</th>
                                     <th class="px-4 py-3">Actions</th>
                                 </tr>
@@ -1326,6 +2637,7 @@
                                         </div>
                                     </th>
                                     <th class="px-6 py-4 text-center">Status</th>
+                                    <th class="px-6 py-4 text-center">Actions</th>
                                 </tr>
                             </thead>
                             <tbody id="feeHistoryTableBody">
@@ -1358,6 +2670,20 @@
                             <label class="block text-sm font-bold text-gray-700 mb-2">Default Monthly Fee (₹)</label>
                             <input type="number" id="settingDefaultFee" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none" placeholder="500">
                         </div>
+                        <div>
+                            <label class="block text-sm font-bold text-gray-700 mb-2">Total Study Seats (Capacity)</label>
+                            <input type="number" id="settingTotalSeats" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none" placeholder="18">
+                            <p class="text-[10px] text-gray-400 mt-1">Defines the visual grid size starting at 18</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold text-gray-700 mb-2">Daily Reminder Time</label>
+                            <input type="time" id="settingReminderTime" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none" value="10:00">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold text-gray-700 mb-2">WhatsApp Group Link</label>
+                            <input type="text" id="settingGroupLink" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none" placeholder="https://chat.whatsapp.com/example">
+                            <p class="text-[10px] text-gray-400 mt-1">This WhatsApp invitation group link will be sent to new students.</p>
+                        </div>
                     </div>
 
                     <div class="border-t pt-6 bg-gray-50 -mx-6 md:-mx-8 px-6 md:px-8 rounded-b-xl mt-4">
@@ -1367,6 +2693,46 @@
                             </div>
                             <button id="saveSettingsBtn" onclick="saveSettings()" class="w-full md:w-auto bg-green-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-green-700 shadow-md transition-all">Save Settings</button>
                         </div>
+                    </div>
+                </div>
+
+                <div class="mt-8 bg-white border p-6 rounded-xl max-w-2xl shadow-sm flex flex-col md:flex-row justify-between items-center gap-4">
+                    <div>
+                        <h4 class="font-bold text-sm text-gray-800">Trigger Reminders Now</h4>
+                        <p class="text-xs text-gray-500 font-medium">Force scan the library ledger and instantly issue due messages to overdue students.</p>
+                    </div>
+                    <button id="triggerScannerBtn" onclick="triggerRemindersScanner()" class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-5 py-3 rounded-lg transition-colors shrink-0">Run Reminders Engine</button>
+                </div>
+
+                <div class="mt-8 bg-white border p-6 rounded-xl max-w-2xl shadow-sm space-y-4">
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                        <div>
+                            <h4 class="font-bold text-gray-800 flex items-center gap-2">
+                                📦 Firestore Backups & Snapshots <span class="bg-indigo-100 text-indigo-700 text-[10px] px-2 py-0.5 rounded font-bold uppercase tracking-wider">Weekly Run</span>
+                            </h4>
+                            <p class="text-[11px] text-gray-500 mt-1">Automatic backups are made once a week. Create manual backups or restore as needed.</p>
+                        </div>
+                        <button onclick="triggerManualSnapshot()" class="w-full sm:w-auto bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-4 py-2.5 rounded-lg transition-all shadow-sm">
+                            ⚡ Take Snapshot
+                        </button>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left text-xs whitespace-nowrap">
+                            <thead class="bg-gray-50 text-gray-500 font-bold uppercase">
+                                <tr>
+                                    <th class="px-3 py-2 border-b">Backup Date</th>
+                                    <th class="px-3 py-2 border-b">Students</th>
+                                    <th class="px-3 py-2 border-b">Payments</th>
+                                    <th class="px-3 py-2 border-b text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="snapshotListBody">
+                                <tr>
+                                    <td colspan="4" class="px-3 py-4 text-center text-gray-400 italic">No snapshots available yet.</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
 
@@ -1380,69 +2746,100 @@
                 </div>
             </section>
 
+            <!-- Seats Section -->
+            <section id="seats" class="hidden">
+                <header class="mb-8">
+                    <h2 class="text-2xl font-bold flex items-center gap-2">🪑 Visual Study Map</h2>
+                    <p id="occupiedSeatsDisplay" class="text-gray-500 font-medium text-sm md:text-base">0 / 18 Seats Occupied</p>
+                </header>
+
+                <!-- Grid of Seats -->
+                <div id="seatsGrid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                    <!-- Cards will be populated dynamically -->
+                </div>
+            </section>
+
         </main>
         </div>
     </div>
 
     <!-- Student Modal -->
-    <div id="studentModal" class="hidden fixed inset-0 bg-black/50 flex justify-center items-center p-4 z-50">
-        <div class="bg-white w-full max-w-md rounded-xl p-8">
+    <div id="studentModal" class="hidden fixed inset-0 bg-black/50 flex justify-center items-center p-4 z-50 overflow-y-auto">
+        <div class="bg-white w-full max-w-md rounded-xl p-6 sm:p-8 my-auto max-h-[90vh] overflow-y-auto relative shadow-2xl">
             <h3 id="modalTitle" class="text-xl font-bold mb-6">Add Student</h3>
             <form onsubmit="submitStudentForm(event)">
                 <input type="hidden" id="studentId">
                 <div class="space-y-4">
                     <div>
                         <label class="block text-sm font-medium mb-1">Name</label>
-                        <input id="formName" type="text" required class="w-full p-2 border rounded text-sm">
+                        <input id="formName" type="text" required class="w-full p-2.5 border rounded-lg text-sm bg-gray-50/50 hover:bg-white focus:bg-white focus:ring-2 focus:ring-green-500 outline-none transition-all">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Phone Number (with 91 prefix, e.g. 919876543210)</label>
-                        <input id="formPhone" type="text" required pattern="^91\d{10}$" title="Start with 91 followed by 10 digits" class="w-full p-2 border rounded text-sm">
+                        <input id="formPhone" type="text" required pattern="^91\d{10}$" title="Start with 91 followed by 10 digits" class="w-full p-2.5 border rounded-lg text-sm bg-gray-50/50 hover:bg-white focus:bg-white focus:ring-2 focus:ring-green-500 outline-none transition-all">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Fee Amount (₹)</label>
-                        <input id="formAmount" type="number" required class="w-full p-2 border rounded text-sm">
+                        <input id="formAmount" type="number" required class="w-full p-2.5 border rounded-lg text-sm bg-gray-50/50 hover:bg-white focus:bg-white focus:ring-2 focus:ring-green-500 outline-none transition-all">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Fee Due Date (Day of Month, e.g. 5)</label>
-                        <input id="formDueDate" type="number" min="1" max="31" required class="w-full p-2 border rounded text-sm">
+                        <input id="formDueDate" type="number" min="1" max="31" required class="w-full p-2.5 border rounded-lg text-sm bg-gray-50/50 hover:bg-white focus:bg-white focus:ring-2 focus:ring-green-500 outline-none transition-all">
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Status</label>
-                        <select id="formStatus" class="w-full p-2 border rounded text-sm">
+                        <select id="formStatus" class="w-full p-2.5 border rounded-lg text-sm bg-white hover:bg-gray-50 focus:ring-2 focus:ring-green-500 outline-none transition-all">
                             <option value="Pending">Pending</option>
                             <option value="Paid">Paid</option>
                         </select>
                     </div>
                     <div>
                         <label class="block text-sm font-medium mb-1">Membership Status</label>
-                        <select id="formAdmitStatus" class="w-full p-2 border rounded text-sm">
+                        <select id="formAdmitStatus" class="w-full p-2.5 border rounded-lg text-sm bg-white hover:bg-gray-50 focus:ring-2 focus:ring-green-500 outline-none transition-all">
                             <option value="active">Active (Regular)</option>
                             <option value="leave">On Leave (Temporary)</option>
                             <option value="leaving">Leaving Library (Soon)</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Assigned Study Seat</label>
+                        <select id="formSeatNumber" class="w-full p-2.5 border rounded-lg text-sm bg-white hover:bg-gray-50 focus:ring-2 focus:ring-green-500 outline-none transition-all">
+                            <!-- Will be populated dynamically by populateSeatDropdown -->
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Study Slot / Timing</label>
+                        <input id="formStudySlot" type="text" list="slotPresets" placeholder="e.g. Full Day, Morning Shift, 8 AM - 2 PM" class="w-full p-2.5 border rounded-lg text-sm bg-white hover:bg-gray-50/50 focus:ring-2 focus:ring-green-500 outline-none transition-all" value="Full Day (24 Hours)">
+                        <datalist id="slotPresets">
+                            <option value="Full Day (24 Hours)">
+                            <option value="Morning Shift (6 AM - 2 PM)">
+                            <option value="Afternoon Shift (2 PM - 10 PM)">
+                            <option value="Night Shift (10 PM - 6 AM)">
+                            <option value="Half Day (6 Hours)">
+                            <option value="12 Hours Access">
+                        </datalist>
+                    </div>
                     <div class="flex items-center gap-2 py-2">
-                        <input type="checkbox" id="formMute" class="w-4 h-4">
-                        <label for="formMute" class="text-sm">Mute Automatic Messages</label>
+                        <input type="checkbox" id="formMute" class="w-4 h-4 text-green-600 focus:ring-green-500 border-gray-300 rounded">
+                        <label for="formMute" class="text-sm font-medium text-gray-700">Mute Automatic Messages</label>
                     </div>
                 </div>
                 <div class="flex gap-4 mt-8">
-                    <button type="button" onclick="closeModal('studentModal')" class="flex-1 border py-2 rounded-lg text-sm font-bold">Cancel</button>
-                    <button type="submit" class="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-green-700">Save Student</button>
+                    <button type="button" onclick="closeModal('studentModal')" class="flex-1 border py-2.5 rounded-xl text-sm font-bold text-gray-750 hover:bg-gray-100 transition-colors">Cancel</button>
+                    <button type="submit" class="flex-1 bg-green-600 text-white py-2.5 rounded-xl text-sm font-bold hover:bg-green-700 transition-all shadow-md">Save Student</button>
                 </div>
             </form>
         </div>
     </div>
 
-    <!-- Payment Modal -->
-    <div id="paymentModal" class="hidden fixed inset-0 bg-black/50 flex justify-center items-center p-4 z-50">
-        <div class="bg-white w-full max-w-sm rounded-xl p-8 text-center text-gray-800">
+    <!-- Payment Confirm Modal -->
+    <div id="paymentModal" class="hidden fixed inset-0 bg-black/50 flex justify-center items-center p-4 z-50 overflow-y-auto">
+        <div class="bg-white w-full max-w-sm rounded-xl p-6 sm:p-8 text-center text-gray-805 my-auto max-h-[90vh] overflow-y-auto relative shadow-2xl">
             <h3 class="text-xl font-bold mb-2">Confirm Payment</h3>
             <p id="paymentStudentName" class="text-gray-500 mb-6 text-sm"></p>
             <div class="mb-6 text-left">
-                <label class="block text-sm font-medium mb-2">Number of Months Paid</label>
-                <select id="paymentMonths" class="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-green-500">
+                <label class="block text-sm font-medium mb-2 text-gray-700">Number of Months Paid</label>
+                <select id="paymentMonths" class="w-full p-2.5 border rounded-lg text-sm bg-white hover:bg-gray-50 focus:ring-2 focus:ring-green-500 transition-all outline-none">
                     <option value="1">1 Month</option>
                     <option value="2">2 Months</option>
                     <option value="3">3 Months</option>
@@ -1453,14 +2850,220 @@
                 </select>
             </div>
             <div class="flex gap-4">
-                <button onclick="closeModal('paymentModal')" class="flex-1 border py-2 rounded-lg text-sm font-bold">Cancel</button>
-                <button id="confirmPaymentBtn" class="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-green-700">Confirm Payment</button>
+                <button onclick="closeModal('paymentModal')" class="flex-1 border py-2.5 rounded-xl text-sm font-bold hover:bg-gray-50 transition-colors">Cancel</button>
+                <button id="confirmPaymentBtn" class="flex-1 bg-green-600 text-white py-2.5 rounded-xl text-sm font-bold hover:bg-green-700 shadow-md transition-all">Confirm Payment</button>
             </div>
         </div>
     </div>
 
+    <!-- Seat Assign Modal -->
+    <div id="seatAssignModal" class="hidden fixed inset-0 bg-black/50 flex justify-center items-center p-4 z-50 overflow-y-auto">
+        <div class="bg-white w-full max-w-sm rounded-xl p-6 sm:p-8 text-gray-805 my-auto max-h-[90vh] overflow-y-auto relative shadow-2xl">
+            <h3 id="seatAssignTitle" class="text-xl font-bold mb-2">Manage Seat</h3>
+            <input type="hidden" id="assignSeatNumber">
+            
+            <div id="currentSeatOccupantInfo" class="mb-4 p-3 bg-red-50/50 border border-red-100 rounded-xl text-left hidden">
+                <p class="text-[10px] text-red-500 font-extrabold uppercase tracking-wider">Current Occupant</p>
+                <p id="occupantName" class="text-sm font-bold text-gray-800">Student name</p>
+                <button type="button" onclick="vacateSeatDirectly()" class="text-xs text-red-600 hover:underline font-bold mt-1">Vacate This Seat</button>
+            </div>
+
+            <div class="mb-6 text-left">
+                <label class="block text-sm font-bold text-gray-700 mb-2">Assign Student to Seat</label>
+                <select id="assignStudentSelect" class="w-full p-2.5 border rounded-lg text-sm bg-white hover:bg-gray-50 focus:ring-2 focus:ring-green-500 outline-none transition-all">
+                    <option value="">Select Student</option>
+                </select>
+            </div>
+            
+            <div class="flex gap-4">
+                <button onclick="closeModal('seatAssignModal')" class="flex-1 border py-2.5 rounded-xl text-sm font-bold hover:bg-gray-50 transition-colors">Cancel</button>
+                <button onclick="submitSeatAssignment()" class="flex-1 bg-green-600 hover:bg-green-700 text-white py-2.5 rounded-xl text-sm font-bold shadow-md transition-all">Update Assignment</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table edit Payment Modal -->
+    <div id="paymentEditModal" class="hidden fixed inset-0 bg-black/50 flex justify-center items-center p-4 z-50 overflow-y-auto">
+        <div class="bg-white w-full max-w-sm rounded-xl p-6 sm:p-8 text-gray-805 my-auto max-h-[90vh] overflow-y-auto relative shadow-2xl">
+            <h3 class="text-xl font-bold mb-4">Edit Payment History</h3>
+            <form onsubmit="submitPaymentEditForm(event)">
+                <input type="hidden" id="editPaymentId">
+                <div class="space-y-4 text-left">
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Student Name</label>
+                        <input id="editPaymentStudentName" type="text" readonly class="w-full p-2.5 bg-gray-50 border rounded-lg text-sm text-gray-500 cursor-not-allowed">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Fee Amount Paid (₹)</label>
+                        <input id="editPaymentAmount" type="number" required class="w-full p-2.5 border rounded-lg text-sm bg-gray-50/50 hover:bg-white focus:bg-white focus:ring-2 focus:ring-green-500 transition-all outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Months Paid</label>
+                        <input id="editPaymentMonths" type="number" min="1" max="12" required class="w-full p-2.5 border rounded-lg text-sm bg-gray-50/50 hover:bg-white focus:bg-white focus:ring-2 focus:ring-green-500 transition-all outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-gray-500 uppercase mb-1">Payment Date</label>
+                        <input id="editPaymentDate" type="text" required class="w-full p-2.5 border rounded-lg text-sm bg-gray-50/50 hover:bg-white focus:bg-white focus:ring-2 focus:ring-green-500 transition-all outline-none" placeholder="DD/MM/YYYY or YYYY-MM-DD">
+                    </div>
+                </div>
+                <div class="flex gap-4 mt-6">
+                    <button type="button" onclick="closeModal('paymentEditModal')" class="flex-1 border py-2.5 rounded-xl text-sm font-bold hover:bg-gray-50 transition-colors">Cancel</button>
+                    <button id="savePaymentEditBtn" type="submit" class="flex-1 bg-green-600 text-white py-2.5 rounded-xl text-sm font-bold hover:bg-green-700 transition-all shadow-md">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Flipkart-inspired Invoice Modal -->
+    <div id="invoiceModal" class="hidden fixed inset-0 bg-black/60 flex justify-center items-center p-4 z-50 overflow-y-auto">
+        <div class="bg-white w-full max-w-2xl rounded-2xl shadow-2xl p-6 md:p-8 text-gray-800 relative max-h-[90vh] overflow-y-auto">
+            <!-- Modal Close Button -->
+            <button onclick="closeModal('invoiceModal')" class="absolute top-4 right-4 text-gray-400 hover:text-gray-600 text-xl font-bold p-1 print:hidden">✕</button>
+            
+            <!-- Invoice Main Body / Printable Area -->
+            <div id="invoicePrintArea" class="space-y-6">
+                <!-- Branding Header -->
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-dashed pb-6 gap-4">
+                    <div>
+                        <h2 id="invoiceBrand" class="text-xl md:text-2xl font-black text-blue-650 tracking-tight">FLIPKART STYLE BILLING</h2>
+                        <span class="text-[10px] bg-blue-50 text-blue-700 font-extrabold px-2 py-0.5 rounded tracking-widest uppercase">Verified Receipt</span>
+                    </div>
+                    <div class="text-left md:text-right text-xs text-gray-500 space-y-1">
+                        <p id="invoiceNumber" class="font-bold text-gray-700">Invoice No: INV-XXXXXX</p>
+                        <p id="invoiceDate">Date: N/A</p>
+                        <p id="invoiceUPIInfo">UPI: example@upi</p>
+                    </div>
+                </div>
+
+                <div class="text-center">
+                    <h3 class="text-sm font-bold text-gray-400 uppercase tracking-widest">Tax Invoice / Bill of Supply</h3>
+                </div>
+
+                <!-- Bill To / Sold By split grid -->
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6 bg-gray-50 p-5 rounded-2xl border text-xs">
+                    <div>
+                        <h4 class="font-extrabold text-gray-450 uppercase mb-2 tracking-wider">Sold By (Provider)</h4>
+                        <p id="invoiceLibraryName" class="font-extrabold text-sm text-gray-800 mb-1">Aaradhya Library</p>
+                        <p class="text-gray-500">Self-Study Digital Zone</p>
+                        <p class="text-gray-500">Aaradhya Library Center, India</p>
+                    </div>
+                    <div>
+                        <h4 class="font-extrabold text-gray-450 uppercase mb-2 tracking-wider">Billed To (Receiver)</h4>
+                        <p id="invoiceStudentName" class="font-extrabold text-sm text-gray-800 mb-1">Student Name</p>
+                        <p id="invoiceStudentPhone" class="text-gray-500">Phone: N/A</p>
+                        <p id="invoiceStudentSeat" class="text-blue-700 font-bold mt-1">Assigned Desk: Seat #None</p>
+                    </div>
+                </div>
+
+                <!-- Product Table -->
+                <div class="border rounded-2xl overflow-hidden text-xs">
+                    <table class="w-full text-left">
+                        <thead class="bg-gray-100 text-gray-500 font-extrabold uppercase">
+                            <tr>
+                                <th class="px-4 py-3">Description of Study Slot</th>
+                                <th class="px-4 py-3 text-center">Seat</th>
+                                <th class="px-4 py-3 text-center">Duration</th>
+                                <th class="px-4 py-3 text-right">Net Price</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y font-medium text-gray-800">
+                            <tr>
+                                <td class="px-4 py-4">
+                                    <p class="font-bold text-gray-950">Library Full-Day Reserved Seat Access</p>
+                                    <p class="text-[10px] text-gray-400 mt-1">Includes high speed Wi-Fi, air conditioning, and peaceful desk block</p>
+                                </td>
+                                <td id="invoiceTableSeat" class="px-4 py-4 text-center font-bold text-gray-800">#None</td>
+                                <td id="invoiceTablePeriod" class="px-4 py-4 text-center text-gray-600">1 Month</td>
+                                <td id="invoiceTableAmount" class="px-4 py-4 text-right font-bold text-gray-900">₹0.00</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Validity Banner and Calculation stamp box -->
+                <div class="flex flex-col md:flex-row justify-between items-stretch gap-4 border-t pt-6">
+                    <div class="flex-1 bg-green-50/50 p-4 rounded-2xl border border-green-100 flex flex-col justify-center">
+                        <h4 class="font-extrabold text-xs text-green-800 mb-1 tracking-wide">📅 VALIDITY PERIOD</h4>
+                        <p id="invoiceValidityDisplay" class="text-base font-black text-green-700">Valid Till: N/A</p>
+                        <p class="text-[10px] text-green-600 mt-1">Your next payment is due on or before this day. Thank you for your support!</p>
+                    </div>
+                    
+                    <div class="w-full md:w-64 bg-gray-50 p-4 rounded-2xl border text-xs space-y-2">
+                        <div class="flex justify-between">
+                            <span class="text-gray-500 font-medium">Subtotal:</span>
+                            <span id="invoiceSubtotal" class="font-bold">₹0.00</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-500 font-medium">Discount:</span>
+                            <span class="font-bold text-green-600">₹0.00 (Promo Off)</span>
+                        </div>
+                        <div class="flex justify-between border-t border-dashed pt-2 text-sm font-bold">
+                            <span class="text-gray-800">Total Received:</span>
+                            <span id="invoiceTotal" class="text-blue-600 font-extrabold">₹0.00</span>
+                        </div>
+                        <div class="text-center pt-2">
+                            <span class="inline-block border-2 border-green-600 text-green-600 font-extrabold text-[10px] px-3 py-1 rounded tracking-widest uppercase rotate-2 shadow-sm font-mono">★★ PAID STAMP ★★</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal Bottom Interaction Panel -->
+            <div class="flex flex-col sm:flex-row gap-2 border-t pt-6 mt-6 print:hidden">
+                <button id="invoiceSendWABtn" class="flex-2 bg-green-600 hover:bg-green-700 text-white font-bold text-sm py-3 px-4 rounded-xl shadow transition-all flex items-center justify-center gap-2">
+                    💬 WhatsApp Invoice
+                </button>
+                <button onclick="printInvoice()" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm py-3 px-4 rounded-xl shadow transition-all flex items-center justify-center gap-2">
+                    🖨️ Print Receipt
+                </button>
+                <button onclick="closeModal('invoiceModal')" class="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-sm py-3 py-2 px-4 rounded-xl transition-all">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+<!-- Floating Outbox Queue Controller -->
+    <div id="outboxWidgetContainer" class="fixed bottom-16 right-4 left-4 sm:left-auto z-[90] print:hidden max-w-[calc(100%-2rem)] sm:max-w-sm w-auto sm:w-96 flex flex-col items-end gap-2">
+        <!-- Expanded Queue Panel -->
+        <div id="outboxQueuePanel" class="hidden bg-white w-full rounded-2xl shadow-2xl border border-gray-100 overflow-hidden transition-all duration-300 flex flex-col max-h-[75vh]">
+            <!-- Header -->
+            <div class="bg-gradient-to-r from-green-600 to-emerald-600 text-white px-4 py-3.5 flex justify-between items-center font-semibold">
+                <div class="flex items-center gap-2">
+                    <span>📤 Messaging Outbox Queue</span>
+                    <span id="queueCountBadge" class="bg-white text-green-700 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+                </div>
+                <button onclick="toggleOutboxPanel()" class="text-white hover:text-green-200 transition-colors font-bold text-sm">
+                    ✕
+                </button>
+            </div>
+            <!-- Queue List -->
+            <div id="outboxQueueList" class="p-4 max-h-[45vh] overflow-y-auto space-y-3 bg-gray-50/50">
+                <!-- Dynamically populated queue items -->
+                <div class="text-center text-sm text-gray-400 py-6 italic">
+                    No pending messages in queue.
+                </div>
+            </div>
+            <!-- Actions footer -->
+            <div class="p-3 border-t bg-gray-50 flex justify-between items-center text-xs text-gray-500">
+                <span>Automatic safety check: 1 min delay</span>
+                <button onclick="clearAllOutboxQueue()" class="text-red-500 hover:text-red-650 font-bold transition-colors">Cancel All</button>
+            </div>
+        </div>
+
+        <!-- Floating Launcher Button -->
+        <button id="outboxLauncherBtn" onclick="toggleOutboxPanel()" class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold px-4 py-3 rounded-full shadow-2xl hover:scale-105 active:scale-95 transition-all flex items-center gap-2 border border-white/20">
+            <span class="relative flex h-3 w-3 inline-block">
+                <span id="outboxPulsePing" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span id="outboxPulseStatic" class="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+            </span>
+            <span class="text-xs tracking-wider font-semibold">OUTBOX QUEUE</span>
+            <span id="outboxBadgeCount" class="bg-white text-indigo-700 text-xs px-2 py-0.5 rounded-full font-bold">0</span>
+        </button>
+    </div>
+
     <!-- Toast Notification -->
-    <div id="toast" class="fixed bottom-4 right-4 px-6 py-3 rounded shadow-lg text-white opacity-0 transition-opacity duration-300 z-[100]"></div>
+    <div id="toast" class="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-4 max-w-md mx-auto sm:mx-0 px-6 py-3 rounded-xl shadow-lg text-white opacity-0 transition-opacity duration-300 z-[100]"></div>
 
 </body>
 </html>

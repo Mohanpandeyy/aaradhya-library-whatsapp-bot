@@ -10,9 +10,13 @@
         "feeAmount": { "type": "number" },
         "dueDateDay": { "type": "number" },
         "status": { "type": "string", "enum": ["Paid", "Pending"] },
-        "lastPaidDate": { "type": "string", "format": "date-time" },
-        "lastReminderSent": { "type": "string", "format": "date-time" },
-        "createdAt": { "type": "string", "format": "date-time" }
+        "admitStatus": { "type": "string" },
+        "seatNumber": { "type": "string" },
+        "nextDueDate": { "type": "string" },
+        "muteReminders": { "type": "boolean" },
+        "lastPaidDate": { "type": "string" },
+        "lastReminderSent": { "type": "string" },
+        "createdAt": { "type": "string" }
       },
       "required": ["name", "phone", "feeAmount", "dueDateDay", "status"]
     },
@@ -34,6 +38,7 @@
         "studentId": { "type": "string" },
         "studentName": { "type": "string" },
         "amount": { "type": "number" },
+        "months": { "type": "number" },
         "paidAt": { "type": "string", "format": "date-time" },
         "paidDate": { "type": "string" }
       },
@@ -46,7 +51,9 @@
       "properties": {
         "libraryName": { "type": "string" },
         "upiId": { "type": "string" },
-        "defaultFee": { "type": "number" }
+        "defaultFee": { "type": "number" },
+        "totalSeats": { "type": "number" },
+        "reminderTime": { "type": "string" }
       },
       "required": ["libraryName", "upiId", "defaultFee"]
     }
