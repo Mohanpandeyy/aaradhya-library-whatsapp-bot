@@ -26,8 +26,14 @@
         }
         window.showToast = showToast;
 
-        window.openModal = (id) => $(id).classList.remove('hidden');
-        window.closeModal = (id) => $(id).classList.add('hidden');
+        window.openModal = (id) => {
+            const el = $(id);
+            if (el) el.classList.remove('hidden');
+        };
+        window.closeModal = (id) => {
+            const el = $(id);
+            if (el) el.classList.add('hidden');
+        };
 
         // --- ERROR HANDLING ---
         const OperationType = {
@@ -75,75 +81,102 @@
         }
         testConnection();
 
-        // Green API Config
-        const INSTANCE_ID = "7107633618";
-        const API_TOKEN = "50028f4fde9b4c719c4748668f9697225bc2f3fab9c44d1c80";
-        const BASE_URL = `https://api.green-api.com/waInstance${INSTANCE_ID}`;
-
         // Global State
         let students = [];
+        let payments = [];
         let templates = {};
+        let feeHistorySort = { column: 'date', direction: 'desc' };
+        let feeHistorySearch = '';
+        let config = {
+            libraryName: 'Aaradhya Library',
+            upiId: 'example@okicici',
+            defaultFee: 500
+        };
         let currentMonth = new Date().toLocaleString('default', { month: 'long' });
         let currentYear = new Date().getFullYear();
 
         // DOM Elements
-        const sections = ['dashboard', 'students', 'sendMessage', 'broadcast', 'templates', 'feeManagement'];
+        const sections = ['dashboard', 'students', 'sendMessage', 'broadcast', 'templates', 'feeManagement', 'feeHistory', 'settings'];
 
         // --- SECTION MANAGEMENT ---
         window.toggleSidebar = () => {
             const sidebar = $('sidebar');
             const overlay = $('sidebarOverlay');
-            sidebar.classList.toggle('-translate-x-full');
-            overlay.classList.toggle('hidden');
+            if (sidebar) sidebar.classList.toggle('-translate-x-full');
+            if (overlay) overlay.classList.toggle('hidden');
         };
 
         window.showSection = (sectionId) => {
-            sections.forEach(s => $(s).classList.add('hidden'));
-            $(sectionId).classList.remove('hidden');
+            sections.forEach(s => {
+                const el = $(s);
+                if (el) el.classList.add('hidden');
+            });
+            const target = $(sectionId);
+            if (target) target.classList.remove('hidden');
             
             // Update sidebar active state
             document.querySelectorAll('.nav-link').forEach(link => {
                 link.classList.remove('bg-green-600', 'text-white');
                 link.classList.add('text-gray-600', 'hover:bg-gray-100');
             });
-            $(`nav-mobile-${sectionId}`).classList.add('bg-green-600', 'text-white');
-            $(`nav-mobile-${sectionId}`).classList.remove('text-gray-600', 'hover:bg-gray-100');
-            $(`nav-desktop-${sectionId}`).classList.add('bg-green-600', 'text-white');
-            $(`nav-desktop-${sectionId}`).classList.remove('text-gray-600', 'hover:bg-gray-100');
+
+            const nm = $(`nav-mobile-${sectionId}`);
+            if (nm) {
+                nm.classList.add('bg-green-600', 'text-white');
+                nm.classList.remove('text-gray-600', 'hover:bg-gray-100');
+            }
+
+            const nd = $(`nav-desktop-${sectionId}`);
+            if (nd) {
+                nd.classList.add('bg-green-600', 'text-white');
+                nd.classList.remove('text-gray-600', 'hover:bg-gray-100');
+            }
 
             if (!window.matchMedia('(min-width: 1024px)').matches) {
                 const sidebar = $('sidebar');
-                const overlay = $('sidebarOverlay');
-                if (!sidebar.classList.contains('-translate-x-full')) {
+                if (sidebar && !sidebar.classList.contains('-translate-x-full')) {
                     window.toggleSidebar();
                 }
             }
 
             if (sectionId === 'dashboard') updateDashboard();
             if (sectionId === 'feeManagement') renderFeeBatch();
+            if (sectionId === 'feeHistory') renderFeeHistory();
             if (sectionId === 'broadcast') renderBroadcastList();
+            if (sectionId === 'settings') renderSettings();
         };
 
         // --- WHATSAPP FUNCTIONS ---
-        async function sendWhatsApp(phone, message) {
+        async function sendWhatsApp(phone, message, options = {}) {
             try {
-                // Format phone: add 91 prefix if not present, strip symbols, add @c.us
-                let cleanPhone = phone.replace(/\D/g, '');
-                if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
-                const chatId = `${cleanPhone}@c.us`;
-
-                const waRes = await fetch(`${BASE_URL}/sendMessage/${API_TOKEN}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ chatId, message })
-                });
-
-                if (!waRes.ok) {
-                  const errorData = await waRes.json();
-                  throw new Error(errorData.message || 'WhatsApp API failed');
+                const formData = new FormData();
+                formData.append('phone', phone);
+                formData.append('message', message);
+                
+                // Pass config to override backend env vars
+                formData.append('upiId', config.upiId);
+                formData.append('upiName', config.libraryName);
+                
+                if (options.photo) {
+                    formData.append('photo', options.photo);
+                }
+                if (options.sendQR) {
+                    formData.append('sendQR', 'true');
+                    formData.append('amount', options.amount || 0);
+                    formData.append('studentName', options.studentName || '');
                 }
 
-                showToast('Message sent successfully!', 'success');
+                const waResponse = await window.fetch('/api/send-message', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!waResponse.ok) {
+                    const errorData = await waResponse.json();
+                    throw new Error(errorData.error || 'Backend failed');
+                }
+
+                showToast('Message processed successfully!', 'success');
                 return true;
             } catch (err) {
                 console.error('WhatsApp Error:', err);
@@ -174,6 +207,14 @@
                 handleFirestoreError(error, OperationType.GET, path);
             });
 
+            const playPath = "payments";
+            onSnapshot(collection(db, playPath), (snapshot) => {
+                payments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                renderFeeHistory();
+            }, (error) => {
+                handleFirestoreError(error, OperationType.GET, playPath);
+            });
+
             // Templates
             const tplPath = "templates";
             try {
@@ -184,13 +225,14 @@
                 // Default templates if empty
                 if (Object.keys(templates).length === 0) {
                     const defaults = {
-                        reminder2day: "Namaste {name} ji, Aapki Library fee ₹{amount} ki due date {dueDate} hai. Kripya samay par jama karein taaki hum aapki seat secure rakh sakein. - Aaradhya Library",
-                        reminderToday: "Namaste {name} ji, Aaj {dueDate} aapki library fee jama karne ki aakhri tarikh hai. Kripya aaj hi payment karein. - Aaradhya Library",
-                        overdueDay1: "Namaste {name} ji, Aapki library fee ({dueDate}) ko due thi par abhi tak pending hai. Kripya dhyan dein aur turant payment karein. - Aaradhya Library",
-                        overdueDay2: "Alert: {name} ji, aapne abhi tak fee jama nahi ki hai. Due date nikle 2 din ho gaye hain. Management seat block kar sakta hai. Kripya aaj hi pay karein. - Aaradhya Library",
-                        finalWarning: "⚠️ FINAL NOTICE: {name} ji, agar aaj dopahar tak fee jama nahi hui toh aapki seat kisi aur student ko allot kar di jaayegi. Seat bachane ke liye turant sampark karein. - Aaradhya Library",
-                        invoice: "Namaste {name} ji, Aapki ₹{amount} fee successully jama ho gayi hai. Thank you! - Aaradhya Library",
-                        broadcast: "Namaste {name} ji,\nLibrary announcement: [Your Message Here]\n- Aaradhya Library"
+                        reminder2day: "Namaste {name} ji, Aapki {libraryName} fee ₹{amount} ki due date {dueDate} hai. Kripya samay par jama karein taaki hum aapki seat secure rakh sakein. - {libraryName}",
+                        reminderToday: "Namaste {name} ji, Aaj {dueDate} aapki {libraryName} fee jama karne ki aakhri tarikh hai. Kripya aaj hi payment karein. - {libraryName}",
+                        overdueDay1: "Namaste {name} ji, Aapki {libraryName} fee ({dueDate}) ko due thi par abhi tak pending hai. Kripya dhyan dein aur turant payment karein. - {libraryName}",
+                        overdueDay2: "Alert: {name} ji, aapne abhi tak fee jama nahi ki hai. Due date nikle 2 din ho gaye hain. Management seat block kar sakta hai. Kripya aaj hi pay karein. - {libraryName}",
+                        finalWarning: "⚠️ FINAL NOTICE: {name} ji, agar aaj dopahar tak fee jama nahi hui toh aapki seat kisi aur student ko allot kar di jaayegi. Seat bachane ke liye turant sampark karein. - {libraryName}",
+                        seatCancelled: "🚫 SEAT CANCELLED: {name} ji, aapki fee due date se 4 din upar ho chuki hai. Aapki seat ab block kar di gayi hai aur kisi aur ko allot kar di jaayegi. - {libraryName}",
+                        invoice: "Namaste {name} ji, Aapki ₹{amount} fee successully jama ho gayi hai. Thank you! - {libraryName}",
+                        broadcast: "Namaste {name} ji,\n{libraryName} announcement: [Your Message Here]\n- {libraryName}"
                     };
                     for (const [key, val] of Object.entries(defaults)) {
                         await setDoc(doc(db, tplPath, key), { message: val, updatedAt: serverTimestamp() });
@@ -201,6 +243,20 @@
             } catch (error) {
                 handleFirestoreError(error, OperationType.LIST, tplPath);
             }
+
+            // Config / Settings
+            const configPath = "settings";
+            try {
+                const configDoc = await getDoc(doc(db, configPath, "global"));
+                if (configDoc.exists()) {
+                    config = { ...config, ...configDoc.data() };
+                } else {
+                    await setDoc(doc(db, configPath, "global"), config);
+                }
+                updateBranding();
+            } catch (error) {
+                console.warn("Config fetch failed:", error);
+            }
         }
 
         async function checkReminders() {
@@ -209,36 +265,47 @@
             const todayStr = new Date().toLocaleDateString('en-CA');
 
             for (const student of students) {
+                // Skip if muted or not active
+                if (student.muteReminders || (student.admitStatus && student.admitStatus !== 'active')) continue;
+                if (student.lastReminderSent === todayStr) continue;
+
+                let templateKey = null;
+                let sendQR = false;
+                const dueDay = student.dueDateDay;
+
                 if (student.status === 'Pending') {
-                    if (student.lastReminderSent === todayStr) continue;
-
-                    let templateKey = null;
-                    const dueDay = student.dueDateDay;
-
                     if (dueDay === todayDay) {
                         templateKey = 'reminderToday';
+                        sendQR = true;
                     } else if (dueDay === todayDay + 2) {
                         templateKey = 'reminder2day';
+                        sendQR = true;
                     } else if (todayDay === dueDay + 1) {
                         templateKey = 'overdueDay1';
                     } else if (todayDay === dueDay + 2) {
                         templateKey = 'overdueDay2';
                     } else if (todayDay === dueDay + 3) {
                         templateKey = 'finalWarning';
+                    } else if (todayDay >= dueDay + 4) {
+                        templateKey = 'seatCancelled';
                     }
+                }
 
-                    if (templateKey && templates[templateKey]) {
-                        const msg = formatMessage(templates[templateKey], student);
-                        const success = await sendWhatsApp(student.phone, msg);
-                        if (success) {
-                            try {
-                                await updateDoc(doc(db, "students", student.id), {
-                                    lastReminderSent: todayStr
-                                });
-                                logReminder(`${templateKey.replace(/([A-Z])/g, ' $1')} sent to ${student.name}`);
-                            } catch (error) {
-                                handleFirestoreError(error, OperationType.UPDATE, "students");
-                            }
+                if (templateKey && templates[templateKey]) {
+                    const msg = formatMessage(templates[templateKey]?.message || templates[templateKey], student);
+                    const success = await sendWhatsApp(student.phone, msg, {
+                        sendQR: sendQR,
+                        amount: student.feeAmount,
+                        studentName: student.name
+                    });
+                    if (success) {
+                        try {
+                            await updateDoc(doc(db, "students", student.id), {
+                                lastReminderSent: todayStr
+                            });
+                            logReminder(`${templateKey.replace(/([A-Z])/g, ' $1')} sent to ${student.name}`);
+                        } catch (error) {
+                            handleFirestoreError(error, OperationType.UPDATE, "students");
                         }
                     }
                 }
@@ -247,10 +314,12 @@
 
         function logReminder(msg) {
             const list = $('reminderLogList');
-            const item = document.createElement('div');
-            item.className = 'py-2 border-b text-sm text-gray-600 flex justify-between';
-            item.innerHTML = `<span>🔔 ${msg}</span><span class="text-xs text-gray-400">${new Date().toLocaleTimeString()}</span>`;
-            list.prepend(item);
+            if (list) {
+                const item = document.createElement('div');
+                item.className = 'py-2 border-b text-sm text-gray-600 flex justify-between';
+                item.innerHTML = `<span>🔔 ${msg}</span><span class="text-xs text-gray-400">${new Date().toLocaleTimeString()}</span>`;
+                list.prepend(item);
+            }
             logActivity(msg);
         }
 
@@ -259,18 +328,140 @@
                       .replace(/{amount}/g, student.feeAmount)
                       .replace(/{dueDate}/g, `${student.dueDateDay} ${currentMonth}`)
                       .replace(/{month}/g, currentMonth)
-                      .replace(/{phone}/g, student.phone);
+                      .replace(/{phone}/g, student.phone)
+                      .replace(/{libraryName}/g, config.libraryName);
         }
 
         // --- DASHBOARD ---
         function updateDashboard() {
-            $('totalStudents').innerText = students.length;
-            $('paidCount').innerText = students.filter(s => s.status === 'Paid').length;
-            $('pendingCount').innerText = students.filter(s => s.status === 'Pending').length;
+            const today = new Date();
+            const todayDay = today.getDate();
             
-            const today = new Date().getDate();
-            $('dueTodayCount').innerText = students.filter(s => s.status === 'Pending' && s.dueDateDay === today).length;
+            // Stats
+            const activeStudents = students.filter(s => (s.admitStatus || 'active') === 'active');
+            
+            if ($('totalStudents')) $('totalStudents').innerText = activeStudents.length;
+            if ($('paidCount')) $('paidCount').innerText = activeStudents.filter(s => s.status === 'Paid').length;
+            if ($('pendingCount')) $('pendingCount').innerText = activeStudents.filter(s => s.status === 'Pending').length;
+            if ($('dueTodayCount')) $('dueTodayCount').innerText = activeStudents.filter(s => s.status === 'Pending' && s.dueDateDay === todayDay).length;
+            
+            if ($('dashboardDateDisplay')) $('dashboardDateDisplay').innerText = today.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+            // Action Buckets
+            renderOverdueList();
+            renderUpcomingList();
+            renderBlockedList();
         }
+
+        function renderOverdueList() {
+            const body = $('overdueListBody');
+            body.innerHTML = '';
+            const today = new Date().getDate();
+            
+            const list = students.filter(s => 
+                s.status === 'Pending' && 
+                s.dueDateDay < today && 
+                (s.admitStatus || 'active') === 'active'
+            ).sort((a,b) => a.dueDateDay - b.dueDateDay);
+
+            if (list.length === 0) {
+                body.innerHTML = '<tr><td colspan="3" class="px-4 py-8 text-center text-gray-400 italic">No urgent overdue students</td></tr>';
+                return;
+            }
+
+            list.forEach(s => {
+                const diff = today - s.dueDateDay;
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="px-4 py-3 font-medium text-gray-900">${s.name}</td>
+                    <td class="px-4 py-3">
+                        <span class="px-2 py-0.5 rounded-full text-xs font-bold ${diff >= 3 ? 'bg-red-100 text-red-700' : 'bg-orange-100 text-orange-700'}">
+                            ${diff} Day${diff > 1 ? 's' : ''} Late
+                        </span>
+                    </td>
+                    <td class="px-4 py-3">
+                        <button onclick="showSection('sendMessage'); $('messagePhone').value='${s.phone}'" class="text-blue-600 hover:font-bold transition-all">Chat →</button>
+                    </td>
+                `;
+                body.appendChild(tr);
+            });
+        }
+
+        function renderUpcomingList() {
+            const body = $('upcomingListBody');
+            body.innerHTML = '';
+            const today = new Date().getDate();
+            
+            const list = students.filter(s => 
+                s.status === 'Pending' && 
+                s.dueDateDay > today && 
+                (s.dueDateDay - today) <= 10 &&
+                (s.admitStatus || 'active') === 'active'
+            ).sort((a,b) => a.dueDateDay - b.dueDateDay);
+
+            if (list.length === 0) {
+                body.innerHTML = '<tr><td colspan="3" class="px-4 py-8 text-center text-gray-400 italic">No upcoming reminders</td></tr>';
+                return;
+            }
+
+            list.forEach(s => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="px-4 py-3 font-medium text-gray-900">${s.name}</td>
+                    <td class="px-4 py-3 text-gray-500">${s.dueDateDay}th ${currentMonth}</td>
+                    <td class="px-4 py-3">
+                        <button onclick="showSection('sendMessage'); $('messagePhone').value='${s.phone}'" class="text-blue-600 hover:font-bold transition-all">Preview →</button>
+                    </td>
+                `;
+                body.appendChild(tr);
+            });
+        }
+
+        function renderBlockedList() {
+            const body = $('blockedListBody');
+            body.innerHTML = '';
+            const today = new Date().getDate();
+            
+            const list = students.filter(s => 
+                s.status === 'Pending' && 
+                (today - s.dueDateDay) >= 4 &&
+                (s.admitStatus || 'active') === 'active'
+            );
+
+            if (list.length === 0) {
+                body.innerHTML = '<p class="text-gray-400 text-sm italic py-4">No blocked seats today</p>';
+                return;
+            }
+
+            list.forEach(s => {
+                const div = document.createElement('div');
+                div.className = 'p-3 bg-red-50 border border-red-100 rounded-xl flex justify-between items-center';
+                div.innerHTML = `
+                    <div>
+                        <p class="font-bold text-red-900 text-sm">${s.name}</p>
+                        <p class="text-[10px] text-red-600">${today - s.dueDateDay} Days Defaulted</p>
+                    </div>
+                    <button onclick="sendCancellationNotice('${s.id}')" class="text-[10px] bg-red-600 text-white px-2 py-1 rounded font-bold">Send Block Notice</button>
+                `;
+                body.appendChild(div);
+            });
+        }
+
+        window.sendCancellationNotice = async (id) => {
+            const s = students.find(x => x.id === id);
+            const tpl = templates['seatCancelled']?.message || templates['finalWarning']?.message;
+            const msg = formatMessage(tpl, s);
+            
+            if (confirm(`Send cancellation notice to ${s.name}?`)) {
+                try {
+                    await sendWhatsApp(s.phone, msg);
+                    showToast('Cancellation notice sent!');
+                    logActivity(`Cancellation notice sent to ${s.name}`);
+                } catch (err) {
+                    showToast('Failed to send notice');
+                }
+            }
+        };
 
         function logActivity(msg) {
             const list = $('activityList');
@@ -294,6 +485,7 @@
         // --- STUDENTS MANAGEMENT ---
         function renderStudents(filter = '') {
             const tbody = $('studentsTableBody');
+            if (!tbody) return;
             tbody.innerHTML = '';
             
             const filtered = students.filter(s => s.name.toLowerCase().includes(filter.toLowerCase()) || s.phone.includes(filter));
@@ -303,13 +495,18 @@
                 tr.className = 'border-b hover:bg-gray-50';
                 
                 const statusInfo = getStatusInfo(s);
+                const admitLabel = s.admitStatus === 'leave' ? '<span class="text-[10px] bg-gray-100 px-1 rounded ml-2">Leave</span>' : 
+                                  s.admitStatus === 'leaving' ? '<span class="text-[10px] bg-red-100 text-red-600 px-1 rounded ml-2 text-nowrap">Leaving</span>' : '';
                 
                 tr.innerHTML = `
-                    <td class="px-4 py-3">${s.name}</td>
+                    <td class="px-4 py-3">
+                        <div class="font-medium inline-block">${s.name} ${s.muteReminders ? '🔇' : ''}</div>
+                        ${admitLabel}
+                    </td>
                     <td class="px-4 py-3">${s.phone}</td>
                     <td class="px-4 py-3">₹${s.feeAmount}</td>
                     <td class="px-4 py-3">${s.dueDateDay}th</td>
-                    <td class="px-4 py-3">
+                    <td class="px-4 py-3 text-nowrap">
                         <span class="px-2 py-1 rounded-full text-xs font-semibold ${statusInfo.class}">
                             ${statusInfo.label}
                         </span>
@@ -324,15 +521,22 @@
         }
 
         function getStatusInfo(s) {
+            if (s.admitStatus === 'leave') return { label: 'On Leave', class: 'bg-gray-100 text-gray-500' };
+            if (s.admitStatus === 'leaving') return { label: 'Leaving Soon', class: 'bg-red-50 text-red-400' };
             if (s.status === 'Paid') return { label: 'Paid', class: 'bg-green-100 text-green-700' };
             const today = new Date().getDate();
             if (s.dueDateDay === today) return { label: 'Due Today', class: 'bg-orange-100 text-orange-700' };
-            if (s.dueDateDay === today + 1 || s.dueDateDay === today + 2) return { label: 'Due in 2 days', class: 'bg-yellow-100 text-yellow-700' };
-            return { label: 'Pending', class: 'bg-red-100 text-red-700' };
+            if (s.dueDateDay < today) return { label: 'Overdue', class: 'bg-red-100 text-red-700 font-bold' };
+            if (s.dueDateDay - today <= 2) return { label: 'Due in 2 days', class: 'bg-yellow-100 text-yellow-700' };
+            return { label: 'Pending', class: 'bg-blue-50 text-blue-500' };
         }
 
         window.submitStudentForm = async (e) => {
             e.preventDefault();
+            const btn = e.target.querySelector('button[type="submit"]');
+            btn.disabled = true;
+            btn.innerText = 'Saving...';
+
             const id = $('studentId').value;
             const data = {
                 name: $('formName').value,
@@ -340,6 +544,8 @@
                 feeAmount: Number($('formAmount').value),
                 dueDateDay: Number($('formDueDate').value),
                 status: $('formStatus').value,
+                admitStatus: $('formAdmitStatus').value,
+                muteReminders: $('formMute').checked,
                 updatedAt: serverTimestamp()
             };
 
@@ -356,6 +562,9 @@
                 closeModal('studentModal');
             } catch (err) {
                 handleFirestoreError(err, OperationType.WRITE, "students");
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Save Student';
             }
         };
 
@@ -366,7 +575,9 @@
             $('formPhone').value = s.phone;
             $('formAmount').value = s.feeAmount;
             $('formDueDate').value = s.dueDateDay;
-            $('formStatus').value = s.status;
+            $('formStatus').value = s.status || 'Pending';
+            $('formAdmitStatus').value = s.admitStatus || 'active';
+            $('formMute').checked = s.muteReminders || false;
             $('modalTitle').innerText = 'Edit Student';
             openModal('studentModal');
         };
@@ -414,14 +625,17 @@
             const studentId = $('msgStudent').value;
             const customPhone = $('customPhone').value;
             const text = $('msgText').value;
+            const photoFile = $('msgPhoto').files[0];
+            const includeQR = $('sendQR').checked;
 
             let phone = customPhone;
             let message = text;
+            let student = null;
 
             if (studentId) {
-                const s = students.find(x => x.id === studentId);
-                phone = s.phone;
-                message = formatMessage(text, s);
+                student = students.find(x => x.id === studentId);
+                phone = student.phone;
+                message = formatMessage(text, student);
             }
 
             if (!phone) return showToast('Please select student or enter phone', 'error');
@@ -430,7 +644,16 @@
             btn.disabled = true;
             btn.innerText = 'Sending...';
             
-            await sendWhatsApp(phone, message);
+            await sendWhatsApp(phone, message, {
+                photo: photoFile,
+                sendQR: includeQR,
+                amount: student ? student.feeAmount : 0,
+                studentName: student ? student.name : ''
+            });
+            
+            // Clear inputs
+            $('msgPhoto').value = '';
+            $('sendQR').checked = false;
             
             btn.disabled = false;
             btn.innerText = 'Send Message';
@@ -549,23 +772,187 @@
             });
         }
 
-        window.markFeePaid = async (id) => {
+        window.markFeePaid = (id) => {
             const s = students.find(x => x.id === id);
-            const dateStr = new Date().toLocaleDateString();
+            $('paymentStudentName').innerText = `Paying for: ${s.name}`;
+            $('paymentMonths').value = "1";
+            openModal('paymentModal');
             
-            try {
-                await updateDoc(doc(db, "students", id), {
-                    status: 'Paid',
-                    lastPaidDate: dateStr
-                });
+            $('confirmPaymentBtn').onclick = async () => {
+                const months = Number($('paymentMonths').value);
+                const btn = $('confirmPaymentBtn');
+                btn.disabled = true;
+                btn.innerText = 'Processing...';
 
-                const msg = formatMessage(templates.invoice, s);
-                await sendWhatsApp(s.phone, msg);
-                
-                showToast(`Fee for ${s.name} marked as paid. Invoice sent.`);
-                logActivity(`Fee received from ${s.name}`);
+                try {
+                    const now = new Date();
+                    const dateStr = now.toLocaleDateString();
+
+                    // Update Student
+                    await updateDoc(doc(db, "students", id), {
+                        status: 'Paid',
+                        lastPaidDate: dateStr,
+                        updatedAt: serverTimestamp()
+                    });
+
+                    // Log Payment
+                    await addDoc(collection(db, "payments"), {
+                        studentId: id,
+                        studentName: s.name,
+                        amount: s.feeAmount * months,
+                        months: months,
+                        paidDate: dateStr,
+                        paidAt: serverTimestamp()
+                    });
+
+                    // Send Invoice
+                    const tpl = templates['invoice'];
+                    const msg = formatMessage(tpl, { ...s, feeAmount: s.feeAmount * months });
+                    await sendWhatsApp(s.phone, msg);
+
+                    showToast(`Paid for ${months} months! Invoice sent.`);
+                    logActivity(`Fee received from ${s.name} (${months} months)`);
+                    closeModal('paymentModal');
+                } catch (err) {
+                    handleFirestoreError(err, OperationType.WRITE, "payments");
+                } finally {
+                    btn.disabled = false;
+                    btn.innerText = 'Confirm Payment';
+                }
+            };
+        };
+
+        // --- FEE HISTORY ---
+        window.sortFeeHistory = (col) => {
+            if (feeHistorySort.column === col) {
+                feeHistorySort.direction = feeHistorySort.direction === 'asc' ? 'desc' : 'asc';
+            } else {
+                feeHistorySort.column = col;
+                feeHistorySort.direction = 'asc';
+            }
+            renderFeeHistory();
+        }
+
+        window.searchFeeHistory = (val) => {
+            feeHistorySearch = val.toLowerCase();
+            renderFeeHistory();
+        }
+
+        function renderFeeHistory() {
+            const tbody = $('feeHistoryTableBody');
+            if (!tbody) return;
+            tbody.innerHTML = '';
+
+            // Update Sort Icons
+            const columns = ['studentName', 'amount', 'date'];
+            columns.forEach(col => {
+                const icon = $(`sort-icon-${col}`);
+                if (icon) {
+                    if (feeHistorySort.column === col) {
+                        icon.innerHTML = feeHistorySort.direction === 'asc' ? 
+                            '<svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M5.293 7.707a1 1 0 010-1.414l4-4a1 1 0 011.414 0l4 4a1 1 0 01-1.414 1.414L11 5.414V17a1 1 0 11-2 0V5.414L6.707 7.707a1 1 0 01-1.414 0z"></path></svg>' : 
+                            '<svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M14.707 12.293a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L9 14.586V3a1 1 0 112 0v11.586l2.293-2.293a1 1 0 011.414 0z"></path></svg>';
+                        icon.className = 'text-green-600';
+                    } else {
+                        icon.innerHTML = '<svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20"><path d="M5 10a1 1 0 011-1h8a1 1 0 110 2H6a1 1 0 01-1-1z"></path></svg>';
+                        icon.className = 'text-gray-300';
+                    }
+                }
+            });
+            
+            // Filter and Sort payments
+            const filteredPayments = payments.filter(p => 
+                (p.studentName || '').toLowerCase().includes(feeHistorySearch) ||
+                (p.paidDate || '').includes(feeHistorySearch) ||
+                (p.amount || '').toString().includes(feeHistorySearch)
+            );
+
+            const sortedPayments = [...filteredPayments].sort((a, b) => {
+                let valA, valB;
+
+                if (feeHistorySort.column === 'studentName') {
+                    valA = (a.studentName || '').toLowerCase();
+                    valB = (b.studentName || '').toLowerCase();
+                } else if (feeHistorySort.column === 'amount') {
+                    valA = Number(a.amount || 0);
+                    valB = Number(b.amount || 0);
+                } else if (feeHistorySort.column === 'date') {
+                    valA = a.paidAt?.toDate?.() || new Date(a.paidDate || 0);
+                    valB = b.paidAt?.toDate?.() || new Date(b.paidDate || 0);
+                }
+
+                if (valA < valB) return feeHistorySort.direction === 'asc' ? -1 : 1;
+                if (valA > valB) return feeHistorySort.direction === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            let total = 0;
+            sortedPayments.forEach(p => {
+                const tr = document.createElement('tr');
+                tr.className = 'border-b hover:bg-gray-50 transition-colors';
+                const dateDisplay = p.paidAt ? p.paidAt.toDate().toLocaleString() : p.paidDate;
+                const amt = Number(p.amount || 0);
+                total += amt;
+
+                tr.innerHTML = `
+                    <td class="px-6 py-4 font-medium text-gray-900">${p.studentName}</td>
+                    <td class="px-6 py-4 text-green-600 font-bold">₹${amt}</td>
+                    <td class="px-6 py-4 text-gray-500">${dateDisplay}</td>
+                    <td class="px-6 py-4">
+                        <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                            <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                            Success
+                        </span>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+
+            // Update summary
+            const totalEl = $('historyTotalAmount');
+            if (totalEl) totalEl.innerText = `₹${total}`;
+            const countEl = $('historyCount');
+            if (countEl) countEl.innerText = sortedPayments.length;
+        }
+        
+        // --- SETTINGS ---
+        function updateBranding() {
+            const labels = document.querySelectorAll('.italic');
+            labels.forEach(l => {
+                if (l.innerText.includes('Library')) {
+                    l.innerText = `📚 ${config.libraryName}`;
+                }
+            });
+            document.title = `${config.libraryName} Management`;
+        }
+
+        function renderSettings() {
+            $('settingLibraryName').value = config.libraryName || '';
+            $('settingUPI').value = config.upiId || '';
+            $('settingDefaultFee').value = config.defaultFee || 500;
+        }
+
+        window.saveSettings = async () => {
+            const btn = $('saveSettingsBtn');
+            btn.disabled = true;
+            btn.innerText = 'Saving...';
+
+            const newConfig = {
+                libraryName: $('settingLibraryName').value,
+                upiId: $('settingUPI').value,
+                defaultFee: Number($('settingDefaultFee').value)
+            };
+
+            try {
+                await setDoc(doc(db, "settings", "global"), newConfig);
+                config = newConfig;
+                updateBranding();
+                showToast('Settings saved successfully!');
             } catch (error) {
-                handleFirestoreError(error, OperationType.UPDATE, "students");
+                handleFirestoreError(error, OperationType.WRITE, "settings");
+            } finally {
+                btn.disabled = false;
+                btn.innerText = 'Save Settings';
             }
         };
 
@@ -574,7 +961,6 @@
         window.onload = () => {
             loadData();
             showSection('dashboard');
-            $('monthName').innerText = currentMonth;
         };
     </script>
     <style>
@@ -606,6 +992,8 @@
                     <li><a id="nav-desktop-broadcast" onclick="showSection('broadcast')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">📢 Broadcast</a></li>
                     <li><a id="nav-desktop-templates" onclick="showSection('templates')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">📝 Templates</a></li>
                     <li><a id="nav-desktop-feeManagement" onclick="showSection('feeManagement')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">💰 Fee Management</a></li>
+                    <li><a id="nav-desktop-feeHistory" onclick="showSection('feeHistory')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">📜 Fee History</a></li>
+                    <li><a id="nav-desktop-settings" onclick="showSection('settings')" class="nav-link flex items-center gap-3 p-3 rounded-lg text-gray-600 hover:bg-gray-100">⚙️ Settings</a></li>
                 </ul>
             </nav>
             <div class="p-4 border-t text-xs text-gray-400 text-center">
@@ -630,47 +1018,113 @@
                     <a id="nav-mobile-dashboard" onclick="showSection('dashboard')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold">🏠 Home</a>
                     <a id="nav-mobile-students" onclick="showSection('students')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">👨‍🎓 Students</a>
                     <a id="nav-mobile-sendMessage" onclick="showSection('sendMessage')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">💬 Chat</a>
+                    <a id="nav-mobile-templates" onclick="showSection('templates')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">📝 Templates</a>
                     <a id="nav-mobile-broadcast" onclick="showSection('broadcast')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">📢 All</a>
                     <a id="nav-mobile-feeManagement" onclick="showSection('feeManagement')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">💰 Fees</a>
+                    <a id="nav-mobile-feeHistory" onclick="showSection('feeHistory')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">📜 History</a>
+                    <a id="nav-mobile-settings" onclick="showSection('settings')" class="nav-link whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-semibold text-gray-600 bg-white border">⚙️ Config</a>
                 </nav>
             
             <!-- Dashboard -->
-            <section id="dashboard">
-                <header class="mb-6">
-                    <h2 class="text-xl md:text-2xl font-bold">Library Dashboard</h2>
-                    <p class="text-gray-500 text-sm md:text-base">Summary for <span id="monthName"></span></p>
+            <section id="dashboard" class="space-y-8">
+                <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div>
+                        <h2 class="text-2xl font-bold text-gray-900 tracking-tight">Library Pulse</h2>
+                        <p id="dashboardDateDisplay" class="text-gray-500 font-medium"></p>
+                    </div>
                 </header>
 
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6 mb-8">
-                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border">
-                        <p class="text-gray-400 text-[10px] md:text-sm uppercase font-bold">Total</p>
-                        <h3 id="totalStudents" class="text-xl md:text-3xl font-bold">0</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 flex flex-col justify-between">
+                        <span class="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2 block">Total Students</span>
+                        <div class="flex items-baseline gap-2">
+                            <span id="totalStudents" class="text-2xl md:text-4xl font-bold text-gray-900">0</span>
+                        </div>
                     </div>
-                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-green-100">
-                        <p class="text-green-500 text-[10px] md:text-sm uppercase font-bold">Paid</p>
-                        <h3 id="paidCount" class="text-xl md:text-3xl font-bold text-green-700">0</h3>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-green-50 flex flex-col justify-between">
+                        <span class="text-xs font-bold text-green-400 uppercase tracking-widest mb-2 block">Paid</span>
+                        <div class="flex items-baseline gap-2">
+                            <span id="paidCount" class="text-2xl md:text-4xl font-bold text-green-600">0</span>
+                        </div>
                     </div>
-                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-red-100">
-                        <p class="text-red-500 text-[10px] md:text-sm uppercase font-bold">Pending</p>
-                        <h3 id="pendingCount" class="text-xl md:text-3xl font-bold text-red-700">0</h3>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-red-50 flex flex-col justify-between">
+                        <span class="text-xs font-bold text-red-400 uppercase tracking-widest mb-2 block">Pending</span>
+                        <div class="flex items-baseline gap-2">
+                            <span id="pendingCount" class="text-2xl md:text-4xl font-bold text-red-500">0</span>
+                        </div>
                     </div>
-                    <div class="bg-white p-4 md:p-6 rounded-xl shadow-sm border border-orange-100">
-                        <p class="text-orange-500 text-[10px] md:text-sm uppercase font-bold">Due</p>
-                        <h3 id="dueTodayCount" class="text-xl md:text-3xl font-bold text-orange-700">0</h3>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-orange-50 flex flex-col justify-between">
+                        <span class="text-xs font-bold text-orange-400 uppercase tracking-widest mb-2 block">Due Today</span>
+                        <div class="flex items-baseline gap-2">
+                            <span id="dueTodayCount" class="text-2xl md:text-4xl font-bold text-orange-500">0</span>
+                        </div>
                     </div>
                 </div>
 
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div class="bg-white rounded-xl shadow-sm border p-6">
-                        <h4 class="font-bold mb-4">Recent Activity</h4>
-                        <div id="activityList" class="space-y-1 max-h-60 overflow-y-auto">
-                            <!-- Activity items -->
+                <!-- Overdue & Reminders Grid -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <!-- Overdue Priority -->
+                    <div class="space-y-6">
+                        <h3 class="text-lg font-bold text-gray-800 flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                            Urgent: Overdue Students
+                        </h3>
+                        <div class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                            <div class="overflow-x-auto min-h-[150px]">
+                                <table class="w-full text-left text-sm">
+                                    <thead class="bg-gray-50 border-b border-gray-100">
+                                        <tr>
+                                            <th class="px-4 py-3 font-bold text-gray-500 uppercase text-[10px]">Student</th>
+                                            <th class="px-4 py-3 font-bold text-gray-500 uppercase text-[10px]">Overdue</th>
+                                            <th class="px-4 py-3 font-bold text-gray-500 uppercase text-[10px]">Quick Link</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="overdueListBody" class="divide-y divide-gray-50">
+                                        <!-- Dynamic content -->
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
-                    <div class="bg-white rounded-xl shadow-sm border p-6">
-                        <h4 class="font-bold mb-4">Automated Reminder Log</h4>
-                        <div id="reminderLogList" class="space-y-1 max-h-60 overflow-y-auto">
-                            <!-- Reminder items -->
+
+                    <!-- Upcoming Reminders -->
+                    <div class="space-y-6">
+                        <h3 class="text-lg font-bold text-orange-600 flex items-center gap-2">
+                            🔔 Upcoming (Next 10 Days)
+                        </h3>
+                        <div class="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+                            <div class="overflow-x-auto min-h-[150px]">
+                                <table class="w-full text-left text-sm">
+                                    <thead class="bg-gray-50 border-b border-gray-100">
+                                        <tr>
+                                            <th class="px-4 py-3 font-bold text-gray-500 uppercase text-[10px]">Student</th>
+                                            <th class="px-4 py-3 font-bold text-gray-500 uppercase text-[10px]">Due On</th>
+                                            <th class="px-4 py-3 font-bold text-gray-500 uppercase text-[10px]">Quick Link</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="upcomingListBody" class="divide-y divide-gray-50">
+                                        <!-- Dynamic content -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <!-- Activity Log -->
+                    <div class="bg-white p-8 rounded-2xl border border-gray-100 shadow-sm overflow-hidden space-y-6">
+                        <h3 class="text-lg font-bold text-gray-800">Recent Activity</h3>
+                        <div id="activityList" class="space-y-1 max-h-60 overflow-y-auto">
+                            <!-- Activities -->
+                        </div>
+                    </div>
+
+                    <!-- Blocked -->
+                    <div class="bg-white p-8 rounded-2xl border border-red-100 shadow-sm overflow-hidden space-y-6">
+                        <h3 class="text-lg font-bold text-red-800">🚫 Seat Blocked (4+ Days Delay)</h3>
+                        <div id="blockedListBody" class="space-y-2 max-h-60 overflow-y-auto">
+                            <!-- Blocked items -->
                         </div>
                     </div>
                 </div>
@@ -725,8 +1179,19 @@
                     </div>
                     <div class="mb-4">
                         <label class="block text-sm font-medium mb-1">Message</label>
-                        <textarea id="msgText" oninput="updatePreview()" class="w-full p-2 border rounded-lg h-32"></textarea>
+                        <textarea id="msgText" oninput="updatePreview()" class="w-full p-2 border rounded-lg h-32 focus:ring-2 focus:ring-green-500 outline-none" placeholder="Enter message text..."></textarea>
                         <p class="text-xs text-gray-400 mt-1">Character Count: <span id="charCount">0</span></p>
+                    </div>
+                    <div class="mb-4 bg-green-50 p-3 rounded-lg border border-green-100">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" id="sendQR" class="w-4 h-4 text-green-600 rounded">
+                            <span class="text-sm font-semibold text-green-800">Include Payment QR Code</span>
+                        </label>
+                        <p class="text-[10px] text-green-600 mt-1">Generates a dynamic UPI QR for the student's fee amount.</p>
+                    </div>
+                    <div class="mb-6">
+                        <label class="block text-sm font-medium mb-1">Attach Photo</label>
+                        <input type="file" id="msgPhoto" accept="image/*" class="w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100">
                     </div>
                     <div class="bg-gray-50 p-4 rounded-lg border mb-6">
                         <p class="text-xs font-bold text-gray-400 mb-2 uppercase">Message Preview</p>
@@ -809,6 +1274,110 @@
                         </tbody>
                     </table>
                 </div>
+                </div>
+            </section>
+
+            <!-- Fee History -->
+            <section id="feeHistory" class="hidden">
+                <header class="mb-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                    <div>
+                        <h2 class="text-2xl font-bold">Fee History</h2>
+                        <p class="text-gray-500 text-sm md:text-base">Comprehensive record of all library transactions.</p>
+                    </div>
+                    <div class="flex gap-4 w-full md:w-auto">
+                        <div class="bg-white border p-3 rounded-lg shadow-sm flex-1 md:flex-none md:w-48">
+                            <p class="text-[10px] text-gray-400 uppercase font-bold">Total Collected</p>
+                            <h4 id="historyTotalAmount" class="text-lg font-bold text-green-600">₹0</h4>
+                        </div>
+                        <div class="bg-white border p-3 rounded-lg shadow-sm flex-1 md:flex-none md:w-32">
+                            <p class="text-[10px] text-gray-400 uppercase font-bold">Transactions</p>
+                            <h4 id="historyCount" class="text-lg font-bold">0</h4>
+                        </div>
+                    </div>
+                </header>
+
+                <div class="bg-white rounded-xl shadow-sm border mb-8">
+                    <div class="p-4 border-b flex flex-col md:flex-row justify-between gap-4">
+                        <input type="text" oninput="searchFeeHistory(this.value)" placeholder="Search history (name, date, amount)..." class="w-full md:w-80 p-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 text-sm">
+                        <div class="text-xs text-gray-400 flex items-center">
+                            * Payments are fetched live from Firestore
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto min-w-full">
+                        <table class="w-full text-left whitespace-nowrap">
+                            <thead class="bg-gray-50 text-xs uppercase font-bold text-gray-500">
+                                <tr>
+                                    <th class="px-6 py-4 cursor-pointer hover:bg-gray-100 group" onclick="sortFeeHistory('studentName')">
+                                        <div class="flex items-center gap-2">
+                                            Student Name 
+                                            <span id="sort-icon-studentName" class="transition-colors"></span>
+                                        </div>
+                                    </th>
+                                    <th class="px-6 py-4 cursor-pointer hover:bg-gray-100 group" onclick="sortFeeHistory('amount')">
+                                        <div class="flex items-center gap-2">
+                                            Amount 
+                                            <span id="sort-icon-amount" class="transition-colors"></span>
+                                        </div>
+                                    </th>
+                                    <th class="px-6 py-4 cursor-pointer hover:bg-gray-100 group" onclick="sortFeeHistory('date')">
+                                        <div class="flex items-center gap-2">
+                                            Payment Date 
+                                            <span id="sort-icon-date" class="transition-colors"></span>
+                                        </div>
+                                    </th>
+                                    <th class="px-6 py-4 text-center">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="feeHistoryTableBody">
+                                <!-- History entries -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings -->
+            <section id="settings" class="hidden">
+                <header class="mb-8">
+                    <h2 class="text-2xl font-bold">App Settings</h2>
+                    <p class="text-gray-500 text-sm md:text-base">Configure your library details and payment info.</p>
+                </header>
+                
+                <div class="max-w-2xl bg-white p-6 md:p-8 rounded-xl shadow-sm border">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                        <div>
+                            <label class="block text-sm font-bold text-gray-700 mb-2">Library Name</label>
+                            <input type="text" id="settingLibraryName" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none" placeholder="e.g. Aaradhya Library">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold text-gray-700 mb-2">UPI ID for QR Code</label>
+                            <input type="text" id="settingUPI" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none" placeholder="example@okicici">
+                            <p class="text-[10px] text-gray-400 mt-1">This ID will be used to generate payment QR codes.</p>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-bold text-gray-700 mb-2">Default Monthly Fee (₹)</label>
+                            <input type="number" id="settingDefaultFee" class="w-full p-3 border rounded-lg focus:ring-2 focus:ring-green-500 outline-none" placeholder="500">
+                        </div>
+                    </div>
+
+                    <div class="border-t pt-6 bg-gray-50 -mx-6 md:-mx-8 px-6 md:px-8 rounded-b-xl mt-4">
+                        <div class="flex flex-col md:flex-row justify-between items-center gap-4">
+                            <div class="text-sm text-gray-500">
+                                <p><strong>Note:</strong> WhatsApp API tokens must be set in the environment variables.</p>
+                            </div>
+                            <button id="saveSettingsBtn" onclick="saveSettings()" class="w-full md:w-auto bg-green-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-green-700 shadow-md transition-all">Save Settings</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-8 bg-blue-50 border border-blue-200 p-6 rounded-xl max-w-2xl">
+                    <h4 class="font-bold text-blue-800 mb-2">Technical Setup Guide</h4>
+                    <p class="text-sm text-blue-700 mb-4">To enable automated WhatsApp messages, make sure you have added the following secrets in the <strong>Settings</strong> section of Google AI Studio:</p>
+                    <ul class="text-xs text-blue-600 space-y-2 list-disc pl-5">
+                        <li><code>GREEN_API_INSTANCE_ID</code>: Your Green-API Instance ID</li>
+                        <li><code>GREEN_API_TOKEN</code>: Your Green-API Account Token</li>
+                    </ul>
+                </div>
             </section>
 
         </main>
@@ -845,12 +1414,48 @@
                             <option value="Paid">Paid</option>
                         </select>
                     </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1">Membership Status</label>
+                        <select id="formAdmitStatus" class="w-full p-2 border rounded text-sm">
+                            <option value="active">Active (Regular)</option>
+                            <option value="leave">On Leave (Temporary)</option>
+                            <option value="leaving">Leaving Library (Soon)</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center gap-2 py-2">
+                        <input type="checkbox" id="formMute" class="w-4 h-4">
+                        <label for="formMute" class="text-sm">Mute Automatic Messages</label>
+                    </div>
                 </div>
                 <div class="flex gap-4 mt-8">
                     <button type="button" onclick="closeModal('studentModal')" class="flex-1 border py-2 rounded-lg text-sm font-bold">Cancel</button>
                     <button type="submit" class="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-green-700">Save Student</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Payment Modal -->
+    <div id="paymentModal" class="hidden fixed inset-0 bg-black/50 flex justify-center items-center p-4 z-50">
+        <div class="bg-white w-full max-w-sm rounded-xl p-8 text-center text-gray-800">
+            <h3 class="text-xl font-bold mb-2">Confirm Payment</h3>
+            <p id="paymentStudentName" class="text-gray-500 mb-6 text-sm"></p>
+            <div class="mb-6 text-left">
+                <label class="block text-sm font-medium mb-2">Number of Months Paid</label>
+                <select id="paymentMonths" class="w-full p-2 border rounded text-sm focus:ring-2 focus:ring-green-500">
+                    <option value="1">1 Month</option>
+                    <option value="2">2 Months</option>
+                    <option value="3">3 Months</option>
+                    <option value="4">4 Months</option>
+                    <option value="5">5 Months</option>
+                    <option value="6">6 Months</option>
+                    <option value="12">1 Year (12 Months)</option>
+                </select>
+            </div>
+            <div class="flex gap-4">
+                <button onclick="closeModal('paymentModal')" class="flex-1 border py-2 rounded-lg text-sm font-bold">Cancel</button>
+                <button id="confirmPaymentBtn" class="flex-1 bg-green-600 text-white py-2 rounded-lg text-sm font-bold hover:bg-green-700">Confirm Payment</button>
+            </div>
         </div>
     </div>
 

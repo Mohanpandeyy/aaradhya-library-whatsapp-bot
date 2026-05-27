@@ -20,5 +20,15 @@ service cloud.firestore {
     match /templates/{templateId} {
       allow read, write: if true; // Open for this tool's simplicity
     }
+
+    // Payments collection
+    match /payments/{paymentId} {
+      allow read, write: if true;
+    }
+
+    // Settings collection
+    match /settings/{settingId} {
+      allow read, write: if true;
+    }
   }
 }

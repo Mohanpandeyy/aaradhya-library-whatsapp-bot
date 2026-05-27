@@ -25,6 +25,30 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["message"]
+    },
+    "payment": {
+      "title": "Payment Record",
+      "description": "Payment history record",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "amount": { "type": "number" },
+        "paidAt": { "type": "string", "format": "date-time" },
+        "paidDate": { "type": "string" }
+      },
+      "required": ["studentId", "studentName", "amount", "paidAt"]
+    },
+    "setting": {
+      "title": "Application Setting",
+      "description": "Global application configuration",
+      "type": "object",
+      "properties": {
+        "libraryName": { "type": "string" },
+        "upiId": { "type": "string" },
+        "defaultFee": { "type": "number" }
+      },
+      "required": ["libraryName", "upiId", "defaultFee"]
     }
   },
   "firestore": {
@@ -35,6 +59,14 @@
     "templates": {
       "schema": "template",
       "description": "Collection of message templates"
+    },
+    "payments": {
+      "schema": "payment",
+      "description": "Collection of payment history"
+    },
+    "settings": {
+      "schema": "setting",
+      "description": "Collection of application settings"
     }
   }
 }
