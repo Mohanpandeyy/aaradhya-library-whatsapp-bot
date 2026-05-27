@@ -184,10 +184,13 @@
                 // Default templates if empty
                 if (Object.keys(templates).length === 0) {
                     const defaults = {
-                        reminder2day: "Namaste {name} ji,\nAapki library membership fee ₹{amount} ki due date {dueDate} hai — sirf 2 din baaki hain.\nFee jama karne ke liye library mein aayein.\nDhanyawad!",
-                        reminderLastDay: "Namaste {name} ji,\nAaj {dueDate} ko aapki library fee ₹{amount} ki aakhri tarikh hai.\nAaj hi fee jama karein.\nLibrary Management",
-                        invoice: "Namaste {name} ji,\nAapki ₹{amount} fee {month} ke liye safaltapoorvak jama ho gayi.\nShukriya!\nLibrary Management",
-                        broadcast: "Namaste {name} ji,\nSpecial announcement for you.\nRegards,\nLibrary Management"
+                        reminder2day: "Namaste {name} ji,\nAapki library membership fee ₹{amount} ki due date {dueDate} hai — sirf 2 din baaki hain. Samay par fee jama karein.\n- Aaradhya Library",
+                        reminderToday: "Namaste {name} ji,\nAaj {dueDate} ko aapki library fee ₹{amount} ki AAKHRI TARIKH hai. Aaj hi fee jama karein taaki seat bani rahe.\n- Aaradhya Library",
+                        overdueDay1: "Important: {name} ji, aapki library fee ₹{amount} kal ({dueDate}) ko due thi par abhi tak jama nahi hui hai. Kripya aaj hi jama karein.\n- Aaradhya Library",
+                        overdueDay2: "Reminder: {name} ji, aapki fee abhi bhi pending hai. Hamara library management system fee na hone par seat automatic block kar sakta hai. Aaj hi pay karein.\n- Aaradhya Library",
+                        finalWarning: "⚠️ FINAL WARNING: {name} ji, agar aaj aapne fee ₹{amount} jama nahi ki, toh aapki seat cancel karke dusre student ko allot kar di jaaegi. Seat bachane ke liye turant sampark karein.\n- Aaradhya Library",
+                        invoice: "Namaste {name} ji,\nAapki ₹{amount} fee {month} के लिए सफलतापूर्वक जमा हो गई है। शुक्रिया!\n- Aaradhya Library",
+                        broadcast: "Namaste {name} ji,\nSpecial announcement for you.\nRegards,\n- Aaradhya Library"
                     };
                     for (const [key, val] of Object.entries(defaults)) {
                         await setDoc(doc(db, tplPath, key), { message: val, updatedAt: serverTimestamp() });
@@ -203,33 +206,28 @@
         async function checkReminders() {
             const today = new Date();
             const todayDay = today.getDate();
-            const todayMonth = today.getMonth();
-            const todayYear = today.getFullYear();
-            const todayStr = today.toISOString().split('T')[0];
+            const todayStr = new Date().toLocaleDateString('en-CA');
 
             for (const student of students) {
                 if (student.status === 'Pending') {
-                    // Check if reminder already sent today
                     if (student.lastReminderSent === todayStr) continue;
 
                     let templateKey = null;
-                    if (student.dueDateDay === todayDay) {
-                        templateKey = 'reminderLastDay';
-                    } else {
-                        // Calculate days remaining
-                        let targetDate = new Date(todayYear, todayMonth, student.dueDateDay);
-                        if (student.dueDateDay < todayDay) {
-                            targetDate.setMonth(todayMonth + 1);
-                        }
-                        const diffTime = targetDate.getTime() - today.getTime();
-                        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                        
-                        if (diffDays === 2) {
-                            templateKey = 'reminder2day';
-                        }
+                    const dueDay = student.dueDateDay;
+
+                    if (dueDay === todayDay) {
+                        templateKey = 'reminderToday';
+                    } else if (dueDay === todayDay + 2) {
+                        templateKey = 'reminder2day';
+                    } else if (todayDay === dueDay + 1) {
+                        templateKey = 'overdueDay1';
+                    } else if (todayDay === dueDay + 2) {
+                        templateKey = 'overdueDay2';
+                    } else if (todayDay === dueDay + 3) {
+                        templateKey = 'finalWarning';
                     }
 
-                    if (templateKey) {
+                    if (templateKey && templates[templateKey]) {
                         const msg = formatMessage(templates[templateKey], student);
                         const success = await sendWhatsApp(student.phone, msg);
                         if (success) {
@@ -237,7 +235,7 @@
                                 await updateDoc(doc(db, "students", student.id), {
                                     lastReminderSent: todayStr
                                 });
-                                logReminder(`${templateKey === 'reminderLastDay' ? 'Last Day' : '2-Day'} reminder sent to ${student.name}`);
+                                logReminder(`${templateKey.replace(/([A-Z])/g, ' $1')} sent to ${student.name}`);
                             } catch (error) {
                                 handleFirestoreError(error, OperationType.UPDATE, "students");
                             }
