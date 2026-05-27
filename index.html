@@ -132,7 +132,7 @@
                 if (cleanPhone.length === 10) cleanPhone = '91' + cleanPhone;
                 const chatId = `${cleanPhone}@c.us`;
 
-                const waRes = await window.fetch(`${BASE_URL}/sendMessage/${API_TOKEN}`, {
+                const waRes = await fetch(`${BASE_URL}/sendMessage/${API_TOKEN}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ chatId, message })
