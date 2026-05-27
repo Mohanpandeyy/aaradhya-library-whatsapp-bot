@@ -201,14 +201,10 @@ function sendWhatsApp(phone, message) {
  */
 function getDefaultTemplates() {
   return {
-    "reminder2day": "Namaste {name} ji,\nAapki library membership fee ₹{amount} ki due date {dueDate} hai — sirf 2 din baaki hain. Samay par fee jama karein.\n- Aaradhya Library",
-    
-    "reminderToday": "Namaste {name} ji,\nAaj {dueDate} ko aapki library fee ₹{amount} ki AAKHRI TARIKH hai. Aaj hi fee jama karein taaki seat bani rahe.\n- Aaradhya Library",
-    
-    "overdueDay1": "Important: {name} ji, aapki library fee ₹{amount} kal ({dueDate}) ko due thi par abhi tak jama nahi hui hai. Kripya aaj hi jama karein.\n- Aaradhya Library",
-    
-    "overdueDay2": "Reminder: {name} ji, aapki fee abhi bhi pending hai. Hamara library management system fee na hone par seat automatic block kar sakta hai. Aaj hi pay karein.\n- Aaradhya Library",
-    
-    "finalWarning": "⚠️ FINAL WARNING: {name} ji, agar aaj aapne fee ₹{amount} jama nahi ki, toh aapki seat cancel karke dusre student ko allot kar di jaaegi. Seat bachane ke liye turant sampark karein.\n- Aaradhya Library"
+    "reminder2day": "Namaste {name} ji, Aapki Library fee ₹{amount} ki due date {dueDate} hai. Kripya samay par jama karein taaki hum aapki seat secure rakh sakein. - Aaradhya Library",
+    "reminderToday": "Namaste {name} ji, Aaj {dueDate} aapki library fee jama karne ki aakhri tarikh hai. Kripya aaj hi payment karein. - Aaradhya Library",
+    "overdueDay1": "Namaste {name} ji, Aapki library fee ({dueDate}) ko due thi par abhi tak pending hai. Kripya dhyan dein aur turant payment karein. - Aaradhya Library",
+    "overdueDay2": "Alert: {name} ji, aapne abhi tak fee jama nahi ki hai. Due date nikle 2 din ho gaye hain. Management seat block kar sakta hai. Kripya aaj hi pay karein. - Aaradhya Library",
+    "finalWarning": "⚠️ FINAL NOTICE: {name} ji, agar aaj dopahar tak fee jama nahi hui toh aapki seat kisi aur student ko allot kar di jaayegi. Seat bachane ke liye turant sampark karein. - Aaradhya Library"
   };
 }
